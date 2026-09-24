@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/nlewo/comin/internal/broker"
@@ -60,8 +61,9 @@ type Manager struct {
 	broker *broker.Broker
 
 	// leaseReader observes the override lease file (S1). A disabled
-	// reader (empty path) makes every new behaviour below inert, so
-	// comin behaves exactly as it did before this feature existed.
+	// reader (empty path) turns off the lease behaviours: the deploy
+	// gate admits everything, and nothing is deferred, released or
+	// returned. Drift status and switch-latest stay on.
 	leaseReader *lease.Reader
 	// leaseState is comin's own cross-restart bookkeeping for the
 	// override-lease feature (lease-aware/released marks, drift-since,
@@ -70,6 +72,11 @@ type Manager struct {
 	// pollPeriod bounds how long C3/S4 can go unevaluated when nothing
 	// else wakes the manager's loop.
 	pollPeriod time.Duration
+
+	// deferred is the latest main generation C1 refused while a lease
+	// was held; offerDeferred offers it once the lease is gone.
+	deferredMu sync.Mutex
+	deferred   *protobuf.Generation
 }
 
 func New(s *store.Store,
@@ -107,6 +114,13 @@ func New(s *store.Store,
 		leaseState:              leaseState,
 		pollPeriod:              DefaultPollPeriod,
 	}
+	deployer.SetAdmission(m.admitQueued)
+	// A switch-latest request made before a restart and never resolved
+	// is re-armed here, before the gRPC server can accept a new one, so
+	// a request arriving during startup is not deployed twice.
+	if leaseState.PendingSwitchLatest() {
+		deployer.SubmitLatest(m.resolveSwitchLatest)
+	}
 	return m
 }
 
@@ -140,28 +154,39 @@ func (m *Manager) toState() *protobuf.State {
 // it (not now): if a deployment is currently in flight, the expected
 // generation may change by the time this request reaches the front of the
 // queue (e.g. a testing deployment that just finished becomes expected
-// under a live git lease). The request is persisted so a comin restart
-// between this call and the deployer picking it up does not drop it.
+// under a live git lease). It fails with "manager: no previous deployment"
+// when there is nothing to switch to. The request is persisted until the
+// deployer resolves it, so a comin restart in between does not drop it.
 func (m *Manager) SwitchDeploymentLatest() error {
+	if _, err := m.resolveExpectedGeneration(); err != nil {
+		return err
+	}
 	if err := m.leaseState.SetPendingSwitchLatest(true); err != nil {
 		return err
 	}
-	m.deployer.SubmitLatest(m.resolveExpectedGeneration)
+	m.deployer.SubmitLatest(m.resolveSwitchLatest)
 	return nil
 }
 
-// resolveExpectedGeneration resolves the S4 expected generation. It is
-// called by the deployer at actual deploy time.
+// resolveExpectedGeneration resolves the S4 expected generation.
 func (m *Manager) resolveExpectedGeneration() (*protobuf.Generation, error) {
-	obs := lease.Observation{}
-	if m.leaseReader.Enabled() {
-		obs = m.leaseReader.Observe()
-	}
-	dpl := m.expectedDeployment(obs.IsGit())
+	dpl := m.expectedDeployment(m.storage.DeploymentList(), m.leaseReader.Observe().IsGit())
 	if dpl == nil {
-		return nil, fmt.Errorf("manager: no deployment to switch to")
+		return nil, fmt.Errorf("manager: no previous deployment")
 	}
 	return dpl.Generation, nil
+}
+
+// resolveSwitchLatest is the resolver of every switch-latest request
+// (operator requests and C3 returns); the deployer calls it at deploy
+// time. Resolving settles the request whether or not it finds a
+// generation, so it clears the persisted pending flag either way.
+func (m *Manager) resolveSwitchLatest() (*protobuf.Generation, error) {
+	g, err := m.resolveExpectedGeneration()
+	if cerr := m.leaseState.SetPendingSwitchLatest(false); cerr != nil {
+		logrus.Errorf("manager: could not clear the pending switch-latest request: %s", cerr)
+	}
+	return g, err
 }
 
 func (m *Manager) Suspend() error {
@@ -284,26 +309,20 @@ func (m *Manager) Run(ctx context.Context) {
 	m.FetchAndBuild(ctx)
 	m.deployer.Run(ctx)
 
-	// A `comin deployment switch-latest` request made before a restart
-	// this process did not itself observe finishing must still be
-	// honoured: re-arm the lazy resolver so the deployer resolves it at
-	// actual deploy time, same as a fresh request (C7).
-	if m.leaseState.PendingSwitchLatest() {
-		m.deployer.SubmitLatest(m.resolveExpectedGeneration)
-	}
-
 	ticker := time.NewTicker(m.pollPeriod)
 	defer ticker.Stop()
-	// C3/S4 must be evaluated at least once per poll period even when
-	// the fetcher emits nothing (it only emits when the selected commit
-	// changes), so a lease that ends with no new commits still returns
-	// within one poll period instead of waiting for the first tick.
-	m.checkRelease()
+	// C3, the deferred tier generation and S4 must be evaluated at least
+	// once per poll period even when the fetcher emits nothing (it only
+	// emits when the selected commit changes), so a lease that ends with
+	// no new commits still returns within one poll period.
+	m.poll(time.Now().UTC())
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
-			m.checkRelease()
+			m.poll(time.Now().UTC())
 		case <-m.stateRequestCh:
 			m.stateResultCh <- m.toState()
 		case dpl := <-m.deployer.DeploymentDoneCh:
@@ -312,26 +331,31 @@ func (m *Manager) Run(ctx context.Context) {
 					logrus.Errorf("manager: could not mark deployment %s lease-aware: %s", dpl.Uuid, err)
 				}
 			}
-			if dpl.Reason == deployer.ReasonDeploymentSwitchLatest {
-				if err := m.leaseState.SetPendingSwitchLatest(false); err != nil {
-					logrus.Errorf("manager: could not clear the pending switch-latest request: %s", err)
-				}
-			}
 			m.prometheus.SetDeploymentInfo(dpl.Generation.SelectedCommitId, dpl.Status)
 			getsEvicted, evicted := m.storage.DeploymentInsertAndCommit(dpl)
 
-			// We remove the evicted deployment profile
-			// path only if this profile path is not used
-			// by any still alive other deployments.
-			if getsEvicted && evicted.ProfilePath != "" {
-				alive := false
+			if getsEvicted {
+				// We remove the evicted deployment profile
+				// path only if this profile path is not used
+				// by any still alive other deployments, and
+				// its lease marks only once no row of it is
+				// left in the store.
+				uuidAlive, profileAlive := false, false
 				for _, d := range m.storage.DeploymentList() {
+					if d.Uuid == evicted.Uuid {
+						uuidAlive = true
+					}
 					if d.ProfilePath == evicted.ProfilePath {
-						alive = true
+						profileAlive = true
 					}
 				}
-				if !alive {
+				if evicted.ProfilePath != "" && !profileAlive {
 					_ = profile.RemoveProfilePath(evicted.ProfilePath)
+				}
+				if !uuidAlive {
+					if err := m.leaseState.Forget(evicted.Uuid); err != nil {
+						logrus.Errorf("manager: could not forget the marks of the evicted deployment %s: %s", evicted.Uuid, err)
+					}
 				}
 			}
 			m.needToReboot = m.executor.NeedToReboot(dpl.Generation.OutPath, dpl.Operation)
@@ -340,9 +364,10 @@ func (m *Manager) Run(ctx context.Context) {
 				m.broker.Publish(&protobuf.Event{Type: &protobuf.Event_RebootRequired_{RebootRequired: e}})
 			}
 			m.prometheus.SetHostInfo(m.needToReboot, m.isSuspended)
-			// A deployment has just finished, so a lease could now be
-			// releasable (C3) even before the next tick.
-			m.checkRelease()
+			// A deployment has just finished: a lease could now be
+			// releasable (C3), a deferred generation offerable, and
+			// the drift episode has changed, even before the next tick.
+			m.poll(time.Now().UTC())
 			if dpl.RestartComin.GetValue() {
 				// TODO: stop contexts
 				logrus.Infof("manager: comin needs to be restarted")

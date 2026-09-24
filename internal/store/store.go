@@ -9,6 +9,7 @@ import (
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 type State struct {
@@ -58,18 +59,25 @@ func New(broker *broker.Broker, filename, gcRootsDir string, capacityMain, capac
 	return &st, nil
 }
 
+// GetState returns a copy of the store's data.
 func (s *Store) GetState() *protobuf.Store {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.data
+	return proto.CloneOf(s.data)
 }
 
 func (s *Store) DeploymentInsertAndCommit(dpl *protobuf.Deployment) (ok bool, evicted *protobuf.Deployment) {
-	ok, evicted = s.DeploymentInsert(dpl)
+	s.mu.Lock()
+	ok, evicted = s.deploymentInsert(dpl)
+	buf, err := s.marshal()
+	s.mu.Unlock()
 	if ok {
 		logrus.Infof("store: the deployment %s has been removed from store.json file", evicted.Uuid)
 	}
-	if err := s.Commit(); err != nil {
+	if err == nil {
+		err = os.WriteFile(s.filename, buf, 0644)
+	}
+	if err != nil {
 		logrus.Errorf("Error while commiting the store.json file: %s", err)
 		return
 	}
@@ -80,6 +88,12 @@ func (s *Store) DeploymentInsertAndCommit(dpl *protobuf.Deployment) (ok bool, ev
 // DeploymentInsert inserts a deployment and return an evicted
 // deployment because the capacity has been reached.
 func (s *Store) DeploymentInsert(dpl *protobuf.Deployment) (getsEvicted bool, evicted *protobuf.Deployment) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deploymentInsert(dpl)
+}
+
+func (s *Store) deploymentInsert(dpl *protobuf.Deployment) (getsEvicted bool, evicted *protobuf.Deployment) {
 	var qty, older int
 	capacity := s.capacityMain
 	if IsTesting(dpl) {
@@ -101,15 +115,22 @@ func (s *Store) DeploymentInsert(dpl *protobuf.Deployment) (getsEvicted bool, ev
 	return
 }
 
+// DeploymentList returns a copy of the stored deployments, most recently
+// inserted first. The copy is taken under the store lock, so callers can
+// read it while deployments are started, finished or inserted.
 func (s *Store) DeploymentList() []*protobuf.Deployment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.data.Deployments
+	list := make([]*protobuf.Deployment, len(s.data.Deployments))
+	for i, d := range s.data.Deployments {
+		list[i] = proto.CloneOf(d)
+	}
+	return list
 }
 
 func (s *Store) LastDeployment() (ok bool, d *protobuf.Deployment) {
-	if len(s.DeploymentList()) > 0 {
-		return true, s.DeploymentList()[0]
+	if list := s.DeploymentList(); len(list) > 0 {
+		return true, list[0]
 	}
 	return
 }
@@ -127,21 +148,29 @@ func (s *Store) Load() (err error) {
 	if err != nil {
 		return
 	}
+	s.mu.Lock()
 	s.data = &data
-	logrus.Infof("store: loaded %d deployments from %s", len(s.data.Deployments), s.filename)
+	s.mu.Unlock()
+	logrus.Infof("store: loaded %d deployments from %s", len(data.Deployments), s.filename)
 	return
 }
 
-func (s *Store) Commit() (err error) {
+func (s *Store) Commit() error {
+	s.mu.Lock()
+	buf, err := s.marshal()
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.filename, buf, 0644)
+}
+
+// marshal serializes the store's data. Callers hold s.mu.
+func (s *Store) marshal() ([]byte, error) {
 	marshaler := protojson.MarshalOptions{
 		UseProtoNames:   true,
 		EmitUnpopulated: true,
 		AllowPartial:    true,
 	}
-	buf, err := marshaler.Marshal(s.data)
-	if err != nil {
-		return
-	}
-	err = os.WriteFile(s.filename, buf, 0644)
-	return
+	return marshaler.Marshal(s.data)
 }

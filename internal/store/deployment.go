@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nlewo/comin/internal/protobuf"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
@@ -51,6 +52,10 @@ func IsTesting(d *protobuf.Deployment) bool {
 	return d.Operation == "test"
 }
 
+// NewDeployment records a new deployment and returns a copy of it. The
+// store keeps its own row: later transitions (DeploymentStarted,
+// DeploymentFinished) return fresh copies rather than mutating a value a
+// caller holds.
 func (s *Store) NewDeployment(g *protobuf.Generation, operation, reason string) *protobuf.Deployment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -62,8 +67,7 @@ func (s *Store) NewDeployment(g *protobuf.Generation, operation, reason string) 
 		Status:     StatusToString(Init),
 	}
 	s.data.Deployments = append(s.data.Deployments, d)
-	return d
-
+	return proto.CloneOf(d)
 }
 
 func (s *Store) deploymentGet(uuid string) (g *protobuf.Deployment, err error) {
@@ -75,37 +79,30 @@ func (s *Store) deploymentGet(uuid string) (g *protobuf.Deployment, err error) {
 	return nil, fmt.Errorf("store: no deployment with uuid %s has been found", uuid)
 }
 
-func (s *Store) GetDeploymentLastest() (latest *protobuf.Deployment) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, d := range s.data.Deployments {
-		if latest == nil || d.EndedAt != nil && d.EndedAt.AsTime().After(latest.EndedAt.AsTime()) {
-			latest = d
-		}
-	}
-	return
-}
-
-func (s *Store) DeploymentStarted(uuid string) error {
+// DeploymentStarted marks the deployment running and returns a copy of it.
+func (s *Store) DeploymentStarted(uuid string) (*protobuf.Deployment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d, err := s.deploymentGet(uuid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	d.StartedAt = timestamppb.New(time.Now().UTC())
 	d.Status = StatusToString(Running)
-	e := &protobuf.Event_DeploymentStarted{Deployment: d}
+	started := proto.CloneOf(d)
+	e := &protobuf.Event_DeploymentStarted{Deployment: proto.CloneOf(d)}
 	s.broker.Publish(&protobuf.Event{Type: &protobuf.Event_DeploymentStartedType{DeploymentStartedType: e}})
-	return nil
+	return started, nil
 }
 
-func (s *Store) DeploymentFinished(uuid string, deploymentErr error, cominNeedRestart bool, profilePath string) error {
+// DeploymentFinished marks the deployment done or failed and returns a copy
+// of it.
+func (s *Store) DeploymentFinished(uuid string, deploymentErr error, cominNeedRestart bool, profilePath string) (*protobuf.Deployment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d, err := s.deploymentGet(uuid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if deploymentErr != nil {
 		d.ErrorMsg = deploymentErr.Error()
@@ -116,7 +113,8 @@ func (s *Store) DeploymentFinished(uuid string, deploymentErr error, cominNeedRe
 	d.EndedAt = timestamppb.New(time.Now().UTC())
 	d.RestartComin = wrapperspb.Bool(cominNeedRestart)
 	d.ProfilePath = profilePath
-	e := &protobuf.Event_DeploymentFinished{Deployment: d}
+	finished := proto.CloneOf(d)
+	e := &protobuf.Event_DeploymentFinished{Deployment: proto.CloneOf(d)}
 	s.broker.Publish(&protobuf.Event{Type: &protobuf.Event_DeploymentFinishedType{DeploymentFinishedType: e}})
-	return nil
+	return finished, nil
 }

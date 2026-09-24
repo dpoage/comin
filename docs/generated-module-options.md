@@ -359,14 +359,24 @@ null or string
 
 
 The path to a developer override lease file owned
-by another tool\. When set, comin freezes deployment of the main
-branch while the file exists, gates new testing-branch
-deployments on the lease’s ` kind ` (deploys only with no lease or
-a lease of kind ` git `), and releases and returns from a testing
-deployment once the lease file disappears\. comin reads only
-whether the file exists and its top-level ` kind ` field; it never
-parses any other field\. ` null ` disables this behaviour entirely:
-comin then behaves exactly as it did before this option existed\.
+by another tool\. comin reads only whether the file exists and its
+top-level ` kind ` field; it never parses any other field\. While
+the file exists, comin deploys no main-branch generation; the
+newest one it held back is deployed once the file is gone\. A new
+testing-branch head deploys only with no lease or a lease of kind
+` git `, and under a ` git ` lease only if the running main commit is
+one of its ancestors\. Once the file is gone and no deployment is
+queued or running, comin releases every testing deployment it
+made on that branch, never deploys their commits again, and
+switches once to the last successful main-branch deployment,
+unless the system already runs it\. This also happens when the
+last testing deployment failed\. ` null ` disables only these lease
+behaviours\. Whatever this option is set to, ` comin status --json `
+reports ` drift `, the post-deployment command gets
+` COMIN_OPERATION `, and ` comin deployment switch-latest ` deploys
+the last successful main-branch deployment (or, under a ` git `
+lease, the last testing one) with ` switch `, including after a
+restart\.
 
 
 

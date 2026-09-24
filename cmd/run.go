@@ -139,8 +139,9 @@ var runCmd = &cobra.Command{
 		leaseReader := lease.NewReader(cfg.OverrideLeaseFile)
 		leaseState, err := leasestate.Load(path.Join(cfg.StateDir, "lease-state.json"))
 		if err != nil {
+			// Load still returns an empty, usable state: no testing
+			// deployment counts as lease-aware, so none is released.
 			logrus.Error(err)
-			os.Exit(1)
 		}
 
 		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, leaseReader, leaseState)

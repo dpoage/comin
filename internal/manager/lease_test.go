@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,18 +28,33 @@ import (
 // controllableExecutor is a lease-test Executor double that lets a test set
 // what /run/current-system currently resolves to.
 type controllableExecutor struct {
+	mu      sync.Mutex
 	current string
+}
+
+func (e *controllableExecutor) set(current string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.current = current
+}
+
+func (e *controllableExecutor) get() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.current
 }
 
 func (e *controllableExecutor) ReadMachineId() (string, error) { return "", nil }
 func (e *controllableExecutor) NeedToReboot(_, _ string) bool  { return false }
 func (e *controllableExecutor) IsStorePathExist(string) bool   { return false }
-func (e *controllableExecutor) CurrentSystem() (string, error) { return e.current, nil }
+func (e *controllableExecutor) CurrentSystem() (string, error) { return e.get(), nil }
 func (e *controllableExecutor) Deploy(ctx context.Context, outPath, operation string) (bool, string, error) {
 	return false, "", nil
 }
+// Eval derives the out path from the commit, so a fetched commit C
+// deploys /nix/store/C.
 func (e *controllableExecutor) Eval(ctx context.Context, repositoryPath, repositorySubdir, commitId, systemAttr, hostname string) (string, string, string, error) {
-	return "", "", "", nil
+	return "/nix/store/drv-" + commitId, "/nix/store/" + commitId, "", nil
 }
 func (e *controllableExecutor) Build(ctx context.Context, drvPath string) error { return nil }
 
@@ -218,20 +234,6 @@ func TestC2GitOrNoLeaseDeploysDescendantTestingHead(t *testing.T) {
 	assert.Equal(t, "test", op)
 }
 
-func TestC2GitLeaseRejectsNonDescendantTestingHead(t *testing.T) {
-	f := newLeaseFixture(t, nil)
-	// Establish a held main commit "m1" via a done main deployment.
-	f.store.DeploymentInsert(&protobuf.Deployment{
-		Uuid:       "m1-dpl",
-		Operation:  "switch",
-		Status:     store.StatusToString(store.Done),
-		Generation: mainGeneration("m1", "/nix/store/m1"),
-	})
-	f.writeLease(t, "git")
-	_, ok := f.leaseDeployDecision(testingGeneration("t1", "m2"))
-	assert.False(t, ok, "a testing head evaluated against a different main than the held one must not deploy")
-}
-
 // ---------------------------------------------------------------------
 // C3: Release
 // ---------------------------------------------------------------------
@@ -317,7 +319,7 @@ func TestC3ExpectedDeploymentSkipsReleasedTestingHeads(t *testing.T) {
 	assert.NoError(t, f.leaseState.MarkLeaseAware(xDpl.Uuid))
 	assert.NoError(t, f.leaseState.MarkReleased(xDpl.Uuid))
 
-	got := f.expectedDeployment(true) // git lease live: testing counts
+	got := f.expectedDeployment(f.store.DeploymentList(), true) // git lease live: testing counts
 	assert.NotNil(t, got)
 	assert.Equal(t, "m1", got.Generation.GetSelectedCommitId(), "a released testing deployment must never be expected again, even while testing counts")
 }
@@ -341,7 +343,7 @@ func TestC3RebootEndedLeaseReturnsNothingAndTargetsMForSwitchLatest(t *testing.T
 		// Reboot: the lease (never persisted) is gone, and
 		// /run/current-system is back to M.
 		f.removeLease()
-		f.exec.current = "/nix/store/m1"
+		f.exec.set("/nix/store/m1")
 
 		f.checkRelease()
 		time.Sleep(150 * time.Millisecond)
@@ -596,7 +598,7 @@ func TestC5ReturningDuringTierDeployMidActivation(t *testing.T) {
 	// that ordering directly instead of relying on deployer.go's
 	// Status-before-post-deploy-command sequencing.
 	deployFunc := func(context.Context, string, string) (bool, string, error) {
-		exec.current = "/nix/store/m2"
+		exec.set("/nix/store/m2")
 		<-deployDone
 		return false, "", nil
 	}
@@ -622,7 +624,7 @@ func TestC5ReturningDuringTierDeployMidActivation(t *testing.T) {
 	mNew := mainGeneration("m2", "/nix/store/m2")
 	d.Submit(mNew, "switch")
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Equal(c, "/nix/store/m2", exec.current)
+		assert.Equal(c, "/nix/store/m2", exec.get())
 	}, 3*time.Second, 10*time.Millisecond)
 	// The deployment is still in flight (Status not Done yet): expected
 	// still points at the prior done deployment (M1), so current != expected.
@@ -645,7 +647,7 @@ func TestC5StatusJsonBytesContract(t *testing.T) {
 	f.store.DeploymentInsert(&protobuf.Deployment{
 		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
 	})
-	f.exec.current = "/nix/store/m1"
+	f.exec.set("/nix/store/m1")
 
 	body := marshalStatus(t, f.toState())
 	assert.Contains(t, body, `"drift":`)

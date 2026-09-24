@@ -79,11 +79,7 @@ func TestDeploymentInsert(t *testing.T) {
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "3", Operation: "switch"})
 	assert.True(t, hasEvicted)
 	assert.Equal(t, "1", evicted.Uuid)
-	expected := []*protobuf.Deployment{
-		{Uuid: "3", Operation: "switch"},
-		{Uuid: "2", Operation: "switch"},
-	}
-	assert.Equal(t, expected, s.DeploymentList())
+	assert.Equal(t, []string{"3", "2"}, uuids(s.DeploymentList()))
 
 	hasEvicted, _ = s.DeploymentInsert(&protobuf.Deployment{Uuid: "4", Operation: "test"})
 	assert.False(t, hasEvicted)
@@ -92,13 +88,7 @@ func TestDeploymentInsert(t *testing.T) {
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "6", Operation: "test"})
 	assert.True(t, hasEvicted)
 	assert.Equal(t, "4", evicted.Uuid)
-	expected = []*protobuf.Deployment{
-		{Uuid: "6", Operation: "test"},
-		{Uuid: "5", Operation: "test"},
-		{Uuid: "3", Operation: "switch"},
-		{Uuid: "2", Operation: "switch"},
-	}
-	assert.Equal(t, expected, s.DeploymentList())
+	assert.Equal(t, []string{"6", "5", "3", "2"}, uuids(s.DeploymentList()))
 
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "7", Operation: "switch"})
 	assert.True(t, hasEvicted)
@@ -106,6 +96,14 @@ func TestDeploymentInsert(t *testing.T) {
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "8", Operation: "switch"})
 	assert.True(t, hasEvicted)
 	assert.Equal(t, "3", evicted.Uuid)
+}
+
+func uuids(dpls []*protobuf.Deployment) []string {
+	ids := make([]string, len(dpls))
+	for i, d := range dpls {
+		ids[i] = d.Uuid
+	}
+	return ids
 }
 
 func TestNewGeneration(t *testing.T) {

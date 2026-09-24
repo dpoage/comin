@@ -6,13 +6,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/dustin/go-humanize"
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/store"
 	"github.com/sirupsen/logrus"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -31,6 +29,11 @@ type DeployFunc func(context.Context, string, string) (bool, string, error)
 // deployer is ready to start deploying it, not when the request was made.
 type ResolveGenerationFunc func() (*protobuf.Generation, error)
 
+// AdmissionFunc reports whether a generation queued by Submit may start
+// deploying now. It is consulted right before the deployer starts it, so a
+// decision taken when the generation was submitted can be revisited.
+type AdmissionFunc func(*protobuf.Generation) bool
+
 type Deployer struct {
 	GenerationCh       chan *protobuf.Generation
 	deployerFunc       DeployFunc
@@ -45,13 +48,19 @@ type Deployer struct {
 	Operation string
 	// Reason is the reason of the next deployment
 	Reason string
-	// resolveGenerationToDeploy, when set, takes priority over
-	// GenerationToDeploy: it is called once the deployer is about to
-	// start deploying, so a `switch-latest` request always targets
-	// whatever is "expected" at that moment, not at submission time.
-	resolveGenerationToDeploy ResolveGenerationFunc
-	generationAvailableCh     chan struct{}
-	postDeploymentCommand     string
+	// resolveLatest is a queued switch-latest request. It is independent
+	// of GenerationToDeploy (neither displaces the other) and runs first
+	// when both are queued. It is called once the deployer is about to
+	// start deploying, so the request targets whatever is "expected" at
+	// that moment, not at submission time.
+	resolveLatest ResolveGenerationFunc
+	// starting is true between the moment the deployer takes a request
+	// off the queue and the moment its deployment is in flight (or the
+	// request is abandoned), so Idle never reports a gap between the two.
+	starting              bool
+	admit                 AdmissionFunc
+	generationAvailableCh chan struct{}
+	postDeploymentCommand string
 
 	isSuspended atomic.Bool
 	resumeCh    chan struct{}
@@ -169,7 +178,9 @@ func (d *Deployer) IsAlreadyDeployed(generation *protobuf.Generation) bool {
 // Submit submits a generation to be deployed. If a deployment is
 // running, this generation will be deployed once the current
 // deployment is finished. If this generation is the same than the one
-// of the last deployment, this generation is skipped.
+// of the last deployment, this generation is skipped. A later Submit
+// replaces a generation still waiting in the queue; a queued
+// switch-latest request (SubmitLatest) is left untouched.
 func (d *Deployer) Submit(generation *protobuf.Generation, operation string) {
 	logrus.Infof("deployer: submitting generation %s with operation %s", generation.Uuid, operation)
 	d.mu.Lock()
@@ -178,11 +189,7 @@ func (d *Deployer) Submit(generation *protobuf.Generation, operation string) {
 	if !d.IsAlreadyDeployed(generation) {
 		d.GenerationToDeploy = generation
 		d.Operation = operation
-		d.resolveGenerationToDeploy = nil
-		select {
-		case d.generationAvailableCh <- struct{}{}:
-		default:
-		}
+		d.signalLocked()
 	}
 }
 
@@ -190,18 +197,25 @@ func (d *Deployer) Submit(generation *protobuf.Generation, operation string) {
 // resolve at the moment the deployer is ready to start deploying it, not
 // when this call is made, and always deploys it with the "switch"
 // operation. Unlike Submit, it is never skipped by the IsAlreadyDeployed
-// check: an explicit switch-latest request always produces a new
-// deployment.
+// check and never refused by the admission func: an explicit
+// switch-latest request always produces a new deployment. A generation
+// queued by Submit stays queued and is deployed after this request;
+// several SubmitLatest calls made before the deployer starts the request
+// produce one deployment.
 func (d *Deployer) SubmitLatest(resolve ResolveGenerationFunc) {
 	logrus.Infof("deployer: submitting a switch-latest request")
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.resolveGenerationToDeploy = resolve
-	d.GenerationToDeploy = nil
-	select {
-	case d.generationAvailableCh <- struct{}{}:
-	default:
-	}
+	d.resolveLatest = resolve
+	d.signalLocked()
+}
+
+// SetAdmission installs the func consulted before each generation queued
+// by Submit starts deploying; a generation it refuses is dropped.
+func (d *Deployer) SetAdmission(admit AdmissionFunc) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.admit = admit
 }
 
 // HasQueuedWork reports whether a deployment request (concrete or a
@@ -209,7 +223,58 @@ func (d *Deployer) SubmitLatest(resolve ResolveGenerationFunc) {
 func (d *Deployer) HasQueuedWork() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.GenerationToDeploy != nil || d.resolveGenerationToDeploy != nil
+	return d.hasQueuedWorkLocked()
+}
+
+func (d *Deployer) hasQueuedWorkLocked() bool {
+	return d.GenerationToDeploy != nil || d.resolveLatest != nil || d.starting
+}
+
+// Idle reports whether nothing is queued and nothing is in flight. The
+// deployment in flight includes its post-deployment command.
+func (d *Deployer) Idle() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return !d.isDeploying.Load() && !d.hasQueuedWorkLocked()
+}
+
+func (d *Deployer) signalLocked() {
+	select {
+	case d.generationAvailableCh <- struct{}{}:
+	default:
+	}
+}
+
+// takeLocked removes the next request from the queue: the switch-latest
+// request first, else the concrete generation. It returns false when the
+// queue is empty.
+func (d *Deployer) takeLocked() (g *protobuf.Generation, operation, reason string, resolve ResolveGenerationFunc, ok bool) {
+	if d.resolveLatest != nil {
+		resolve = d.resolveLatest
+		d.resolveLatest = nil
+	} else if d.GenerationToDeploy != nil {
+		g, operation, reason = d.GenerationToDeploy, d.Operation, d.Reason
+		d.GenerationToDeploy = nil
+	} else {
+		return nil, "", "", nil, false
+	}
+	d.starting = true
+	return g, operation, reason, resolve, true
+}
+
+// settle marks the current request finished or abandoned and wakes the
+// runner again when more work is queued.
+func (d *Deployer) settle(finished *protobuf.Deployment) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.starting = false
+	d.isDeploying.Store(false)
+	if finished != nil {
+		d.deployment.Store(finished)
+	}
+	if d.hasQueuedWorkLocked() {
+		d.signalLocked()
+	}
 }
 
 func (d *Deployer) Run(ctx context.Context) {
@@ -224,28 +289,29 @@ func (d *Deployer) Run(ctx context.Context) {
 			}
 
 			d.mu.Lock()
-			g := d.GenerationToDeploy
-			operation := d.Operation
-			reason := d.Reason
-			resolve := d.resolveGenerationToDeploy
-			d.GenerationToDeploy = nil
-			d.resolveGenerationToDeploy = nil
+			g, operation, reason, resolve, ok := d.takeLocked()
+			admit := d.admit
 			d.mu.Unlock()
+			if !ok {
+				continue
+			}
 
 			if resolve != nil {
 				resolved, err := resolve()
+				if err == nil && resolved == nil {
+					err = fmt.Errorf("the resolver returned no generation")
+				}
 				if err != nil {
 					logrus.Errorf("deployer: switch-latest could not resolve a generation to deploy: %s", err)
-					continue
-				}
-				if resolved == nil {
+					d.settle(nil)
 					continue
 				}
 				g = resolved
 				operation = "switch"
 				reason = ReasonDeploymentSwitchLatest
-			}
-			if g == nil {
+			} else if admit != nil && !admit(g) {
+				logrus.Infof("deployer: the generation %s is no longer admitted for deployment", g.Uuid)
+				d.settle(nil)
 				continue
 			}
 			logrus.Infof("deployer: deploying generation %s with operation %s", g.Uuid, operation)
@@ -255,23 +321,28 @@ func (d *Deployer) Run(ctx context.Context) {
 			d.previousDeployment.Swap(d.Deployment())
 			d.deployment.Store(dpl)
 			d.isDeploying.Store(true)
+			d.starting = false
 			d.mu.Unlock()
-			if err := d.store.DeploymentStarted(dpl.Uuid); err != nil {
+			started, err := d.store.DeploymentStarted(dpl.Uuid)
+			if err != nil {
 				logrus.Errorf("deployer: could not update the deployment %s in the store", dpl.Uuid)
+				d.settle(nil)
 				continue
 			}
+			d.deployment.Store(started)
 			cominNeedRestart, profilePath, err := d.deployerFunc(
 				ctx,
 				g.OutPath,
 				operation,
 			)
 
-			deployment := d.Deployment()
-			deployment.EndedAt = timestamppb.New(time.Now().UTC())
-			if err := d.store.DeploymentFinished(dpl.Uuid, err, cominNeedRestart, profilePath); err != nil {
+			deployment, err := d.store.DeploymentFinished(dpl.Uuid, err, cominNeedRestart, profilePath)
+			if err != nil {
 				logrus.Errorf("deployer: could not update the deployment %s in the store", dpl.Uuid)
+				d.settle(nil)
 				continue
 			}
+			d.deployment.Store(deployment)
 			cmd := d.postDeploymentCommand
 			if cmd != "" {
 				_, err = runPostDeploymentCommand(cmd, deployment)
@@ -280,9 +351,8 @@ func (d *Deployer) Run(ctx context.Context) {
 				}
 			}
 
-			d.isDeploying.Store(false)
-			d.deployment.Store(deployment)
-			d.DeploymentDoneCh <- d.Deployment()
+			d.settle(deployment)
+			d.DeploymentDoneCh <- deployment
 		}
 	}()
 }

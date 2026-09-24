@@ -39,8 +39,7 @@ func (o Observation) IsGit() bool {
 }
 
 // Reader observes the override lease file at a fixed path. A Reader with an
-// empty path is disabled: Observe always reports no lease, matching comin's
-// behaviour before this feature existed.
+// empty path is disabled: Observe always reports no lease.
 type Reader struct {
 	path string
 }

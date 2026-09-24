@@ -32,6 +32,9 @@ type Repository interface {
 	FetchAndUpdate(ctx context.Context, remoteNames []string) (rsCh chan *pb.RepositoryStatus)
 	// GetRepositoryStatus is currently not thread safe and is only used to initialize the fetcher
 	GetRepositoryStatus() *pb.RepositoryStatus
+	// IsAncestor reports whether the commit base is the commit top or
+	// one of its ancestors. It is safe to call while a fetch is running.
+	IsAncestor(base, top string) (bool, error)
 }
 
 // repositoryStatus is the last saved repositoryStatus
@@ -70,6 +73,19 @@ func New(config types.GitConfig, mainCommitId string, prometheus prometheus.Prom
 
 func (r *repository) GetRepositoryStatus() *pb.RepositoryStatus {
 	return proto.CloneOf(r.RepositoryStatus)
+}
+
+func (r *repository) IsAncestor(base, top string) (bool, error) {
+	if base == top {
+		return true, nil
+	}
+	// A handle of its own: go-git's object storage caches are not safe
+	// to share with the fetch goroutine.
+	repo, err := git.PlainOpen(r.GitConfig.Path)
+	if err != nil {
+		return false, err
+	}
+	return isAncestor(repo, plumbing.NewHash(base), plumbing.NewHash(top))
 }
 
 func (r *repository) FetchAndUpdate(ctx context.Context, remoteNames []string) (rsCh chan *pb.RepositoryStatus) {

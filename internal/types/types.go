@@ -72,8 +72,8 @@ type Configuration struct {
 	BuildConfirmer        Confirmer  `yaml:"build_confirmer"`
 	DeployConfirmer       Confirmer  `yaml:"deploy_confirmer"`
 	// OverrideLeaseFile is the path to a developer override lease file
-	// owned by another tool. Empty means the override-lease feature is
-	// disabled and comin behaves exactly as it did before this field
-	// existed.
+	// owned by another tool. Empty disables the lease behaviours (tier
+	// freeze, kind gate, release and return); drift status,
+	// COMIN_OPERATION and switch-latest do not depend on it.
 	OverrideLeaseFile string `yaml:"override_lease_file"`
 }

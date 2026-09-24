@@ -37,6 +37,12 @@ func (f *Fetcher) IsFetching() bool {
 	return f.isFetching.Load()
 }
 
+// IsAncestor reports whether the commit base is the commit top or one of
+// its ancestors in the local repository.
+func (f *Fetcher) IsAncestor(base, top string) (bool, error) {
+	return f.repo.IsAncestor(base, top)
+}
+
 func (f *Fetcher) TriggerFetch(remotes []string) {
 	f.submitRemotes <- remotes
 }

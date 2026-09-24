@@ -10,9 +10,10 @@ package config
 // than hand-writing it.
 //
 // This shells out to `nix-build` against the fork's own repository (the
-// worktree this test runs from), evaluating nix/comin-config.nix with a
-// synthetic NixOS-style config value - not a full nixosSystem evaluation,
-// since comin-config.nix only ever reads config.services.comin.*.
+// worktree this test runs from): it evaluates nix/module-options.nix with
+// lib.evalModules and renders nix/comin-config.nix from the result. It is
+// not a full nixosSystem evaluation, since comin-config.nix only ever
+// reads config.services.comin.*.
 
 import (
 	"os"
@@ -41,27 +42,36 @@ func TestNixRenderedConfigYamlRoundTripsOverrideLeaseFile(t *testing.T) {
 	root := repoRootForNixRenderTest(t)
 	leasePath := "/opt/pattern/override.json"
 
+	// The config is evaluated through module-options.nix's option
+	// declarations (as module.nix imports them), so renaming the option
+	// there breaks this test too.
 	expr := `
 let
   flake = builtins.getFlake "` + root + `";
   pkgs = import flake.inputs.nixpkgs { system = builtins.currentSystem; };
   lib = pkgs.lib;
-  config = {
-    services.comin = {
-      hostname = "test-host";
-      repositoryType = "nix";
-      repositorySubdir = ".";
-      systemAttr = "test";
-      remotes = [ ];
-      exporter = { listen_address = "0.0.0.0"; port = 4243; };
-      gpgPublicKeyPaths = [ ];
-      buildConfirmer = { mode = "auto"; auto_duration = 0; };
-      deployConfirmer = { mode = "auto"; auto_duration = 0; };
-      postDeploymentCommand = null;
-      overrideLeaseFile = "` + leasePath + `";
-    };
+  eval = lib.evalModules {
+    modules = [
+      (flake.outPath + "/nix/module-options.nix")
+      {
+        options = {
+          assertions = lib.mkOption { type = lib.types.anything; default = [ ]; };
+          networking.hostName = lib.mkOption { type = lib.types.str; default = "test-host"; };
+        };
+        config = {
+          _module.args.pkgs = pkgs;
+          services.comin = {
+            enable = true;
+            repositoryType = "nix";
+            systemAttr = "test";
+            remotes = [ ];
+            overrideLeaseFile = "` + leasePath + `";
+          };
+        };
+      }
+    ];
   };
-in (import (flake.outPath + "/nix/comin-config.nix") { inherit config pkgs lib; }).cominConfigYaml
+in (import (flake.outPath + "/nix/comin-config.nix") { config = eval.config; inherit pkgs lib; }).cominConfigYaml
 `
 
 	cmd := exec.Command("nix-build",
