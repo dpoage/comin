@@ -46,6 +46,25 @@ func TestLastDeployment(t *testing.T) {
 	assert.Equal(t, "2", last.Uuid)
 }
 
+// C10: after a restart with exactly one stored deployment, that deployment
+// is comin's current/previous deployment. Mutant: revert the fix (len(...) >
+// 1 instead of > 0), which makes ok=false for exactly one deployment.
+func TestLastDeploymentWithExactlyOne(t *testing.T) {
+	tmp := t.TempDir()
+	bk := broker.New()
+	bk.Start()
+	s, _ := New(bk, "state.json", tmp+"/gcroots", 2, 2)
+	ok, d := s.LastDeployment()
+	assert.False(t, ok)
+	assert.Nil(t, d)
+
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "only", Operation: "switch"})
+	ok, d = s.LastDeployment()
+	assert.True(t, ok)
+	assert.NotNil(t, d)
+	assert.Equal(t, "only", d.Uuid)
+}
+
 func TestDeploymentInsert(t *testing.T) {
 	tmp := t.TempDir()
 	bk := broker.New()

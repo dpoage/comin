@@ -40,6 +40,12 @@ func (n *NixFlakeLocal) NeedToReboot(outPath, operation string) bool {
 func (n *NixFlakeLocal) IsStorePathExist(storePath string) bool {
 	return isStorePathExist(storePath)
 }
+func (n *NixFlakeLocal) CurrentSystem() (string, error) {
+	if n.systemAttr == "darwinConfigurations" {
+		return utils.CurrentSystemDarwin()
+	}
+	return utils.CurrentSystemLinux()
+}
 
 func (n *NixFlakeLocal) ShowDerivation(ctx context.Context, flakeUrl, hostname string) (drvPath string, outPath string, err error) {
 	return showDerivationWithFlake(ctx, flakeUrl, hostname, n.systemAttr)

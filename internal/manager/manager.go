@@ -9,12 +9,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/nlewo/comin/internal/broker"
 	"github.com/nlewo/comin/internal/builder"
 	"github.com/nlewo/comin/internal/deployer"
 	"github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/fetcher"
+	"github.com/nlewo/comin/internal/lease"
+	"github.com/nlewo/comin/internal/leasestate"
 	"github.com/nlewo/comin/internal/profile"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
@@ -23,6 +26,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+// DefaultPollPeriod is how often the manager re-evaluates release (C3) and
+// drift (S4) state even when nothing was fetched, built, or deployed. It is
+// exported so tests can shrink it with SetPollPeriod.
+const DefaultPollPeriod = 30 * time.Second
 
 type Manager struct {
 	// The machine id of the current host. It is used to ensure
@@ -50,6 +58,18 @@ type Manager struct {
 	isSuspended bool
 
 	broker *broker.Broker
+
+	// leaseReader observes the override lease file (S1). A disabled
+	// reader (empty path) makes every new behaviour below inert, so
+	// comin behaves exactly as it did before this feature existed.
+	leaseReader *lease.Reader
+	// leaseState is comin's own cross-restart bookkeeping for the
+	// override-lease feature (lease-aware/released marks, drift-since,
+	// a pending switch-latest request); never part of store.json.
+	leaseState *leasestate.State
+	// pollPeriod bounds how long C3/S4 can go unevaluated when nothing
+	// else wakes the manager's loop.
+	pollPeriod time.Duration
 }
 
 func New(s *store.Store,
@@ -64,6 +84,8 @@ func New(s *store.Store,
 	deployConfirmer *Confirmer,
 	broker *broker.Broker,
 	configurationOperations ConfigurationOperations,
+	leaseReader *lease.Reader,
+	leaseState *leasestate.State,
 ) *Manager {
 
 	m := &Manager{
@@ -81,8 +103,17 @@ func New(s *store.Store,
 		DeployConfirmer:         deployConfirmer,
 		broker:                  broker,
 		configurationOperations: configurationOperations,
+		leaseReader:             leaseReader,
+		leaseState:              leaseState,
+		pollPeriod:              DefaultPollPeriod,
 	}
 	return m
+}
+
+// SetPollPeriod overrides the default poll period. It must be called before
+// Run.
+func (m *Manager) SetPollPeriod(d time.Duration) {
+	m.pollPeriod = d
 }
 
 func (m *Manager) GetState() *protobuf.State {
@@ -100,16 +131,37 @@ func (m *Manager) toState() *protobuf.State {
 		Store:           m.storage.GetState(),
 		BuildConfirmer:  m.BuildConfirmer.status(),
 		DeployConfirmer: m.DeployConfirmer.status(),
+		Drift:           m.driftStatus(time.Now().UTC()),
 	}
 }
 
+// SwitchDeploymentLatest always deploys the S4 expected generation with
+// "switch", resolved at the moment the deployer actually starts deploying
+// it (not now): if a deployment is currently in flight, the expected
+// generation may change by the time this request reaches the front of the
+// queue (e.g. a testing deployment that just finished becomes expected
+// under a live git lease). The request is persisted so a comin restart
+// between this call and the deployer picking it up does not drop it.
 func (m *Manager) SwitchDeploymentLatest() error {
-	latest := m.storage.GetDeploymentLastest()
-	if latest == nil {
-		return fmt.Errorf("manager: no previous deployment")
+	if err := m.leaseState.SetPendingSwitchLatest(true); err != nil {
+		return err
 	}
-	m.deployer.Submit(latest.Generation, "switch")
+	m.deployer.SubmitLatest(m.resolveExpectedGeneration)
 	return nil
+}
+
+// resolveExpectedGeneration resolves the S4 expected generation. It is
+// called by the deployer at actual deploy time.
+func (m *Manager) resolveExpectedGeneration() (*protobuf.Generation, error) {
+	obs := lease.Observation{}
+	if m.leaseReader.Enabled() {
+		obs = m.leaseReader.Observe()
+	}
+	dpl := m.expectedDeployment(obs.IsGit())
+	if dpl == nil {
+		return nil, fmt.Errorf("manager: no deployment to switch to")
+	}
+	return dpl.Generation, nil
 }
 
 func (m *Manager) Suspend() error {
@@ -191,7 +243,10 @@ func (m *Manager) FetchAndBuild(ctx context.Context) {
 					logrus.Error(err)
 					continue
 				}
-				operation := m.getOperationFromConfigurationOperations(generation.SelectedRemoteName, generation.SelectedBranchName)
+				operation, ok := m.leaseDeployDecision(&generation)
+				if !ok {
+					continue
+				}
 				m.deployer.Submit(&generation, operation)
 			}
 		}
@@ -229,11 +284,39 @@ func (m *Manager) Run(ctx context.Context) {
 	m.FetchAndBuild(ctx)
 	m.deployer.Run(ctx)
 
+	// A `comin deployment switch-latest` request made before a restart
+	// this process did not itself observe finishing must still be
+	// honoured: re-arm the lazy resolver so the deployer resolves it at
+	// actual deploy time, same as a fresh request (C7).
+	if m.leaseState.PendingSwitchLatest() {
+		m.deployer.SubmitLatest(m.resolveExpectedGeneration)
+	}
+
+	ticker := time.NewTicker(m.pollPeriod)
+	defer ticker.Stop()
+	// C3/S4 must be evaluated at least once per poll period even when
+	// the fetcher emits nothing (it only emits when the selected commit
+	// changes), so a lease that ends with no new commits still returns
+	// within one poll period instead of waiting for the first tick.
+	m.checkRelease()
+
 	for {
 		select {
+		case <-ticker.C:
+			m.checkRelease()
 		case <-m.stateRequestCh:
 			m.stateResultCh <- m.toState()
 		case dpl := <-m.deployer.DeploymentDoneCh:
+			if m.leaseReader.Enabled() && isTestingDeployment(dpl) {
+				if err := m.leaseState.MarkLeaseAware(dpl.Uuid); err != nil {
+					logrus.Errorf("manager: could not mark deployment %s lease-aware: %s", dpl.Uuid, err)
+				}
+			}
+			if dpl.Reason == deployer.ReasonDeploymentSwitchLatest {
+				if err := m.leaseState.SetPendingSwitchLatest(false); err != nil {
+					logrus.Errorf("manager: could not clear the pending switch-latest request: %s", err)
+				}
+			}
 			m.prometheus.SetDeploymentInfo(dpl.Generation.SelectedCommitId, dpl.Status)
 			getsEvicted, evicted := m.storage.DeploymentInsertAndCommit(dpl)
 
@@ -257,6 +340,9 @@ func (m *Manager) Run(ctx context.Context) {
 				m.broker.Publish(&protobuf.Event{Type: &protobuf.Event_RebootRequired_{RebootRequired: e}})
 			}
 			m.prometheus.SetHostInfo(m.needToReboot, m.isSuspended)
+			// A deployment has just finished, so a lease could now be
+			// releasable (C3) even before the next tick.
+			m.checkRelease()
 			if dpl.RestartComin.GetValue() {
 				// TODO: stop contexts
 				logrus.Infof("manager: comin needs to be restarted")

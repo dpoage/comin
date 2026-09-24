@@ -108,7 +108,7 @@ func (s *Store) DeploymentList() []*protobuf.Deployment {
 }
 
 func (s *Store) LastDeployment() (ok bool, d *protobuf.Deployment) {
-	if len(s.DeploymentList()) > 1 {
+	if len(s.DeploymentList()) > 0 {
 		return true, s.DeploymentList()[0]
 	}
 	return

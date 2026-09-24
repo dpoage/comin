@@ -71,4 +71,9 @@ type Configuration struct {
 	PostDeploymentCommand string     `yaml:"post_deployment_command"`
 	BuildConfirmer        Confirmer  `yaml:"build_confirmer"`
 	DeployConfirmer       Confirmer  `yaml:"deploy_confirmer"`
+	// OverrideLeaseFile is the path to a developer override lease file
+	// owned by another tool. Empty means the override-lease feature is
+	// disabled and comin behaves exactly as it did before this field
+	// existed.
+	OverrideLeaseFile string `yaml:"override_lease_file"`
 }

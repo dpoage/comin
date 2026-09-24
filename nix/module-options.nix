@@ -231,12 +231,28 @@ in {
         deployment. comin provides to the script the following
         environment variables: `COMIN_GIT_SHA`, `COMIN_GIT_REF`,
         `COMIN_GIT_MSG`, `COMIN_HOSTNAME`, `COMIN_FLAKE_URL`,
-        `COMIN_GENERATION`, `COMIN_STATUS` and `COMIN_ERROR_MSG`.";
+        `COMIN_GENERATION`, `COMIN_STATUS`, `COMIN_ERROR_MSG` and
+        `COMIN_OPERATION` (the deployment's operation: `switch`, `test`
+        or `boot`).";
         type = nullOr path;
         default = null;
         example = lib.literalExpression ''
           pkgs.writers.writeBash "post" "echo $COMIN_GIT_SHA";
         '';
+      };
+      overrideLeaseFile = mkOption {
+        description = "The path to a developer override lease file owned
+        by another tool. When set, comin freezes deployment of the main
+        branch while the file exists, gates new testing-branch
+        deployments on the lease's `kind` (deploys only with no lease or
+        a lease of kind `git`), and releases and returns from a testing
+        deployment once the lease file disappears. comin reads only
+        whether the file exists and its top-level `kind` field; it never
+        parses any other field. `null` disables this behaviour entirely:
+        comin then behaves exactly as it did before this option existed.";
+        type = nullOr str;
+        default = null;
+        example = "/opt/pattern/override.json";
       };
       buildConfirmer = mkOption {
         description = "The confirmer options for the build.";

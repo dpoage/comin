@@ -13,6 +13,8 @@ import (
 	executorPkg "github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/fetcher"
 	"github.com/nlewo/comin/internal/http"
+	"github.com/nlewo/comin/internal/lease"
+	"github.com/nlewo/comin/internal/leasestate"
 	"github.com/nlewo/comin/internal/manager"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
@@ -133,7 +135,15 @@ var runCmd = &cobra.Command{
 			configurationOperations[r.Name][r.Branches.Main.Name] = r.Branches.Main.Operation
 			configurationOperations[r.Name][r.Branches.Testing.Name] = r.Branches.Testing.Operation
 		}
-		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations)
+
+		leaseReader := lease.NewReader(cfg.OverrideLeaseFile)
+		leaseState, err := leasestate.Load(path.Join(cfg.StateDir, "lease-state.json"))
+		if err != nil {
+			logrus.Error(err)
+			os.Exit(1)
+		}
+
+		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, leaseReader, leaseState)
 
 		http.Serve(manager,
 			metrics,

@@ -19,9 +19,17 @@ import (
 const (
 	ReasonDeploymentBuilder = "builder"
 	ReasonDeploymentManual  = "manual"
+	// ReasonDeploymentSwitchLatest tags a deployment produced by `comin
+	// deployment switch-latest`, so callers can tell it apart from an
+	// ordinary fetched-and-built deployment.
+	ReasonDeploymentSwitchLatest = "switch-latest"
 )
 
 type DeployFunc func(context.Context, string, string) (bool, string, error)
+
+// ResolveGenerationFunc resolves the generation to deploy at the moment the
+// deployer is ready to start deploying it, not when the request was made.
+type ResolveGenerationFunc func() (*protobuf.Generation, error)
 
 type Deployer struct {
 	GenerationCh       chan *protobuf.Generation
@@ -36,9 +44,14 @@ type Deployer struct {
 	// The operation to use for the next deployment
 	Operation string
 	// Reason is the reason of the next deployment
-	Reason                string
-	generationAvailableCh chan struct{}
-	postDeploymentCommand string
+	Reason string
+	// resolveGenerationToDeploy, when set, takes priority over
+	// GenerationToDeploy: it is called once the deployer is about to
+	// start deploying, so a `switch-latest` request always targets
+	// whatever is "expected" at that moment, not at submission time.
+	resolveGenerationToDeploy ResolveGenerationFunc
+	generationAvailableCh     chan struct{}
+	postDeploymentCommand     string
 
 	isSuspended atomic.Bool
 	resumeCh    chan struct{}
@@ -165,11 +178,38 @@ func (d *Deployer) Submit(generation *protobuf.Generation, operation string) {
 	if !d.IsAlreadyDeployed(generation) {
 		d.GenerationToDeploy = generation
 		d.Operation = operation
+		d.resolveGenerationToDeploy = nil
 		select {
 		case d.generationAvailableCh <- struct{}{}:
 		default:
 		}
 	}
+}
+
+// SubmitLatest queues a request whose target generation is resolved by
+// resolve at the moment the deployer is ready to start deploying it, not
+// when this call is made, and always deploys it with the "switch"
+// operation. Unlike Submit, it is never skipped by the IsAlreadyDeployed
+// check: an explicit switch-latest request always produces a new
+// deployment.
+func (d *Deployer) SubmitLatest(resolve ResolveGenerationFunc) {
+	logrus.Infof("deployer: submitting a switch-latest request")
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.resolveGenerationToDeploy = resolve
+	d.GenerationToDeploy = nil
+	select {
+	case d.generationAvailableCh <- struct{}{}:
+	default:
+	}
+}
+
+// HasQueuedWork reports whether a deployment request (concrete or a
+// switch-latest resolver) is waiting for the deployer to start it.
+func (d *Deployer) HasQueuedWork() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.GenerationToDeploy != nil || d.resolveGenerationToDeploy != nil
 }
 
 func (d *Deployer) Run(ctx context.Context) {
@@ -186,11 +226,31 @@ func (d *Deployer) Run(ctx context.Context) {
 			d.mu.Lock()
 			g := d.GenerationToDeploy
 			operation := d.Operation
+			reason := d.Reason
+			resolve := d.resolveGenerationToDeploy
 			d.GenerationToDeploy = nil
+			d.resolveGenerationToDeploy = nil
 			d.mu.Unlock()
+
+			if resolve != nil {
+				resolved, err := resolve()
+				if err != nil {
+					logrus.Errorf("deployer: switch-latest could not resolve a generation to deploy: %s", err)
+					continue
+				}
+				if resolved == nil {
+					continue
+				}
+				g = resolved
+				operation = "switch"
+				reason = ReasonDeploymentSwitchLatest
+			}
+			if g == nil {
+				continue
+			}
 			logrus.Infof("deployer: deploying generation %s with operation %s", g.Uuid, operation)
 
-			dpl := d.store.NewDeployment(g, d.Operation, d.Reason)
+			dpl := d.store.NewDeployment(g, operation, reason)
 			d.mu.Lock()
 			d.previousDeployment.Swap(d.Deployment())
 			d.deployment.Store(dpl)
