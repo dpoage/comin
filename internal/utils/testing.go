@@ -9,8 +9,6 @@ import (
 
 type RepositoryMock struct {
 	RsCh chan *protobuf.RepositoryStatus
-	// IsAncestorFunc answers IsAncestor. Nil makes IsAncestor fail.
-	IsAncestorFunc func(base, top string) (bool, error)
 }
 
 func NewRepositoryMock() (r *RepositoryMock) {
@@ -25,9 +23,7 @@ func (r *RepositoryMock) FetchAndUpdate(ctx context.Context, remoteNames []strin
 func (r *RepositoryMock) GetRepositoryStatus() *protobuf.RepositoryStatus {
 	return &protobuf.RepositoryStatus{}
 }
+// IsAncestor fails: the mock has no commit history.
 func (r *RepositoryMock) IsAncestor(base, top string) (bool, error) {
-	if r.IsAncestorFunc == nil {
-		return false, fmt.Errorf("RepositoryMock: IsAncestor is not configured")
-	}
-	return r.IsAncestorFunc(base, top)
+	return false, fmt.Errorf("RepositoryMock: no commit history")
 }
