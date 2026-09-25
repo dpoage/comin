@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/store"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -86,14 +87,22 @@ func latestDeployment(deployments []*protobuf.Deployment, keep func(*protobuf.De
 // admitQueued), so a lease that appears while the generation is queued
 // still stops it. With the lease reader disabled (overrideLeaseFile is
 // null) it always admits: the decisions are be6025e's.
-//   - C1: while a lease exists, no main generation deploys; the refused
-//     generation is deferred until the lease ends (offerDeferred).
+//   - A main generation whose commit is the current, done, main
+//     deployment is not deployed again (a fetch re-emits it once the
+//     selection stops picking an ended override's testing head).
+//   - C1: while a lease exists, or its override ended but C3 has not
+//     released it yet, no main generation deploys; the refused
+//     generation is deferred until C3 has decided (offerDeferred). A
+//     main deployment ahead of C3 would leave the override unreleased,
+//     and its testing head selectable again.
 //   - C2: a lease of any kind but git refuses a testing head. Under a git
 //     lease the held main commit must be an ancestor of the testing head.
 //     With no lease there is no descent check: the repository already
 //     requires the testing head to descend from the fetched main head.
 //   - A testing head that is the commit of a released deployment of the
 //     same branch never deploys again.
+//
+// switch-latest requests, C3 returns included, never pass through it.
 func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string, ok bool) {
 	operation = m.getOperationFromConfigurationOperations(g.SelectedRemoteName, g.SelectedBranchName)
 	if !m.leaseReader.Enabled() {
@@ -102,8 +111,18 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 	obs := m.leaseReader.Observe()
 
 	if !isTestingGeneration(g) {
+		if cur := m.deployer.Deployment(); cur != nil && cur.Status == store.StatusToString(store.Done) &&
+			!isTestingDeployment(cur) && cur.Generation.GetSelectedCommitId() == g.GetSelectedCommitId() {
+			logrus.Infof("manager: skipping deployment of the main generation %s: its commit %s is already deployed", g.Uuid, g.SelectedCommitId)
+			return operation, false
+		}
 		if obs.Exists {
 			logrus.Infof("manager: deferring the main generation %s: an override lease is held", g.Uuid)
+			m.setDeferred(g)
+			return operation, false
+		}
+		if m.unreleasedOverride(m.deployer.Deployment()) {
+			logrus.Infof("manager: deferring the main generation %s: the ended override is not released yet", g.Uuid)
 			m.setDeferred(g)
 			return operation, false
 		}
@@ -116,7 +135,7 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 		return operation, false
 	}
 	deployments := m.storage.DeploymentList()
-	if m.isReleasedHead(g, deployments) {
+	if m.releasedHeads(deployments)[testingHead(g)] {
 		logrus.Infof("manager: skipping deployment of the testing generation %s: its commit %s is the head of an ended override", g.Uuid, g.SelectedCommitId)
 		return operation, false
 	}
@@ -152,25 +171,48 @@ func (m *Manager) descendsFrom(g *protobuf.Generation, held string) bool {
 	return ok
 }
 
-// isReleasedHead reports whether g's commit is the commit of a released
-// testing deployment of the same remote and branch. The fetcher re-emits
-// that head after a restart, and a remote branch deleted at override end
+func testingHead(g *protobuf.Generation) repository.TestingHead {
+	return repository.TestingHead{Remote: g.GetSelectedRemoteName(), Branch: g.GetSelectedBranchName(), Commit: g.GetSelectedCommitId()}
+}
+
+// releasedHeads returns the heads of ended overrides: the commits of the
+// released testing deployments, per remote and branch. After the lease
+// state was lost (MarksLostAt), every testing deployment that ended before
+// the loss counts too, since its marks are unknown. The fetcher re-emits
+// such a head after a restart, and a remote branch deleted at override end
 // stays in comin's local repository, so without this an ended override
 // would come back.
-func (m *Manager) isReleasedHead(g *protobuf.Generation, deployments []*protobuf.Deployment) bool {
+func (m *Manager) releasedHeads(deployments []*protobuf.Deployment) map[repository.TestingHead]bool {
+	lostAt := m.leaseState.MarksLostAt()
+	heads := map[repository.TestingHead]bool{}
 	for _, d := range deployments {
-		dg := d.GetGeneration()
-		if !isTestingGeneration(dg) || dg.GetSelectedCommitId() != g.GetSelectedCommitId() {
+		if !isTestingDeployment(d) {
 			continue
 		}
-		if dg.GetSelectedRemoteName() != g.GetSelectedRemoteName() || dg.GetSelectedBranchName() != g.GetSelectedBranchName() {
-			continue
-		}
-		if m.leaseState.IsReleased(d.Uuid) {
-			return true
+		lost := lostAt != nil && d.EndedAt != nil && d.EndedAt.AsTime().Before(*lostAt)
+		if lost || m.leaseState.IsReleased(d.Uuid) {
+			heads[testingHead(d.Generation)] = true
 		}
 	}
-	return false
+	return heads
+}
+
+// testingSelection is the fetcher's testing selection for the next fetch.
+// With the lease reader disabled it is the default one (be6025e's). Heads
+// of ended overrides are excluded, so once C3 has released a branch the
+// repository selects the fetched main head again, and the normal fetch
+// flow deploys it. Under a git lease a testing head is selected when it
+// descends from the held main commit, even after the tier moved on.
+func (m *Manager) testingSelection() repository.TestingSelection {
+	if !m.leaseReader.Enabled() {
+		return repository.TestingSelection{}
+	}
+	deployments := m.storage.DeploymentList()
+	selection := repository.TestingSelection{Excluded: m.releasedHeads(deployments)}
+	if m.leaseReader.Observe().IsGit() {
+		selection.Base = heldMainCommitId(deployments)
+	}
+	return selection
 }
 
 func (m *Manager) setDeferred(g *protobuf.Generation) {
@@ -185,6 +227,29 @@ func (m *Manager) takeDeferred() *protobuf.Generation {
 	g := m.deferred
 	m.deferred = nil
 	return g
+}
+
+// deferredTierHead returns the deferred main generation when it is the
+// latest fetched main head, taking it. A deferred generation that is not
+// the fetched main head is dropped: the fetch flow brings the newer head.
+// When no fetch completed yet in this process, the deferred generation is
+// kept for offerDeferred.
+func (m *Manager) deferredTierHead() *protobuf.Generation {
+	m.deferredMu.Lock()
+	defer m.deferredMu.Unlock()
+	d := m.deferred
+	if d == nil {
+		return nil
+	}
+	head := m.Fetcher.MainHead()
+	if head == "" {
+		return nil
+	}
+	m.deferred = nil
+	if d.GetSelectedCommitId() != head {
+		return nil
+	}
+	return d
 }
 
 // offerDeferred offers the main generation C1 deferred, once: when there
@@ -207,13 +272,21 @@ func (m *Manager) offerDeferred() {
 	m.deployer.Submit(g, operation)
 }
 
+// unreleasedOverride reports whether dpl is a lease-aware testing
+// deployment C3 has not released yet: its override is live, or ended and
+// awaiting C3's decision.
+func (m *Manager) unreleasedOverride(dpl *protobuf.Deployment) bool {
+	return dpl != nil && isTestingDeployment(dpl) && m.leaseState.IsLeaseAware(dpl.Uuid) && !m.leaseState.IsReleased(dpl.Uuid)
+}
+
 // c3Candidate reports whether C3's release conditions currently hold, and
 // if so, the current lease-aware testing deployment they apply to: no
 // lease, nothing queued or in flight, and the current deployment is a
 // lease-aware testing deployment that finished, successfully or not (a
 // failed `switch-to-configuration test` usually leaves the system
-// activated). It never mutates state: both checkRelease (which acts on it)
-// and driftStatus (which only reports it) call this.
+// activated), and that C3 has not released yet: C3 decides once per
+// ended override. It never mutates state: both checkRelease (which acts
+// on it) and driftStatus (which only reports it) call this.
 func (m *Manager) c3Candidate() (*protobuf.Deployment, bool) {
 	if !m.leaseReader.Enabled() || m.leaseReader.Observe().Exists {
 		return nil, false
@@ -222,7 +295,7 @@ func (m *Manager) c3Candidate() (*protobuf.Deployment, bool) {
 		return nil, false
 	}
 	dpl := m.deployer.Deployment()
-	if dpl == nil || !isTestingDeployment(dpl) || !m.leaseState.IsLeaseAware(dpl.Uuid) {
+	if !m.unreleasedOverride(dpl) {
 		return nil, false
 	}
 	if dpl.Status != store.StatusToString(store.Done) && dpl.Status != store.StatusToString(store.Failed) {
@@ -231,36 +304,21 @@ func (m *Manager) c3Candidate() (*protobuf.Deployment, bool) {
 	return dpl, true
 }
 
-// checkRelease implements C3: once an override lease ends and nothing is
-// queued or in flight, every lease-aware testing deployment of the current
-// deployment's branch is released, and comin returns once to the S4
-// expected generation (unless already running it). The return is a
-// switch-latest request, so it is never skipped as "already deployed".
+// checkRelease implements C3, one decision per ended override. Once the
+// lease is gone and nothing is queued or in flight, every lease-aware
+// testing deployment of the current deployment's branch is released. comin
+// returns only a system it deployed: when /run/current-system is the out
+// path of one of those released deployments and not the S4 expected one.
+// Anything else (a reboot back to it, a change made out of band) is left
+// as it is, for S4 to report. The release and the pending return are
+// written together, so a restart before the return deploys still returns
+// exactly once. The return is a switch-latest request, never skipped as
+// "already deployed". It goes straight to the fetched main head when that
+// head is built (the deferred generation); otherwise to S4 expected, and
+// the fetch flow brings the fetched main head afterwards.
 func (m *Manager) checkRelease() {
 	dpl, ok := m.c3Candidate()
 	if !ok {
-		return
-	}
-	deployments := m.storage.DeploymentList()
-	branch := dpl.Generation.GetSelectedBranchName()
-	remote := dpl.Generation.GetSelectedRemoteName()
-	for _, d := range deployments {
-		if !isTestingDeployment(d) {
-			continue
-		}
-		if d.Generation.GetSelectedBranchName() != branch || d.Generation.GetSelectedRemoteName() != remote {
-			continue
-		}
-		if !m.leaseState.IsLeaseAware(d.Uuid) || m.leaseState.IsReleased(d.Uuid) {
-			continue
-		}
-		if err := m.leaseState.MarkReleased(d.Uuid); err != nil {
-			logrus.Errorf("manager: could not mark deployment %s released: %s", d.Uuid, err)
-		}
-	}
-
-	expected := m.expectedDeployment(deployments, false)
-	if expected == nil {
 		return
 	}
 	current, err := m.executor.CurrentSystem()
@@ -268,11 +326,55 @@ func (m *Manager) checkRelease() {
 		logrus.Errorf("manager: could not read the current system: %s", err)
 		return
 	}
-	if current == expected.Generation.GetOutPath() {
+	deployments := m.storage.DeploymentList()
+	branch := dpl.Generation.GetSelectedBranchName()
+	remote := dpl.Generation.GetSelectedRemoteName()
+	var release []string
+	deployedByOverride := false
+	for _, d := range deployments {
+		if !isTestingDeployment(d) {
+			continue
+		}
+		if d.Generation.GetSelectedBranchName() != branch || d.Generation.GetSelectedRemoteName() != remote {
+			continue
+		}
+		if !m.leaseState.IsLeaseAware(d.Uuid) {
+			continue
+		}
+		if d.Generation.GetOutPath() == current {
+			deployedByOverride = true
+		}
+		if !m.leaseState.IsReleased(d.Uuid) {
+			release = append(release, d.Uuid)
+		}
+	}
+
+	expected := m.expectedDeployment(deployments, false)
+	returning := deployedByOverride && expected != nil && current != expected.Generation.GetOutPath()
+	tierHead := m.deferredTierHead()
+	if err := m.leaseState.Release(release, returning); err != nil {
+		logrus.Errorf("manager: could not record the end of the override of %s/%s: %s", remote, branch, err)
+	}
+	if !returning {
+		logrus.Infof("manager: the override of %s/%s ended; the current system %s is left as it is", remote, branch, current)
+		if tierHead != nil {
+			// Not a return: the tier head is offered like any
+			// deferred tier commit.
+			m.setDeferred(tierHead)
+		}
 		return
 	}
-	logrus.Infof("manager: the override of %s/%s ended, returning to %s", remote, branch, expected.Generation.GetOutPath())
-	m.deployer.SubmitLatest(m.resolveSwitchLatest)
+	target := tierHead
+	if target == nil {
+		logrus.Infof("manager: the override of %s/%s ended, returning to %s", remote, branch, expected.Generation.GetOutPath())
+		m.deployer.SubmitLatest(m.resolveSwitchLatest)
+		return
+	}
+	logrus.Infof("manager: the override of %s/%s ended, returning to the fetched main head %s", remote, branch, target.GetOutPath())
+	m.deployer.SubmitLatest(func() (*protobuf.Generation, error) {
+		m.clearPendingSwitchLatest()
+		return target, nil
+	})
 }
 
 // poll re-evaluates everything that can change without a fetch: C3, the
@@ -317,15 +419,13 @@ func decideDriftState(in driftInputs) string {
 	return "leaseless"
 }
 
-func (m *Manager) inFlightInfo(now time.Time) (inFlight bool, age time.Duration) {
-	if !m.deployer.IsDeploying() {
-		return false, 0
-	}
+// inFlightAge is how long the deployment in flight has been running.
+func (m *Manager) inFlightAge(now time.Time) time.Duration {
 	dpl := m.deployer.Deployment()
 	if dpl == nil || dpl.StartedAt == nil {
-		return true, 0
+		return 0
 	}
-	return true, now.Sub(dpl.StartedAt.AsTime())
+	return now.Sub(dpl.StartedAt.AsTime())
 }
 
 // driftStatus computes S4's `drift` object and persists the start of the
@@ -333,6 +433,14 @@ func (m *Manager) inFlightInfo(now time.Time) (inFlight bool, age time.Duration)
 // it once the state is back to none. toState calls it for `comin status`,
 // and poll calls it on every tick and after every finished deployment.
 func (m *Manager) driftStatus(now time.Time) *protobuf.Drift {
+	// The deployer's activity is read first: when it reports nothing
+	// queued or in flight, every deployment it made has finished, so
+	// the store and the current system read below already show it.
+	inFlight, queued := m.deployer.Activity()
+	var inFlightAge time.Duration
+	if inFlight {
+		inFlightAge = m.inFlightAge(now)
+	}
 	obs := m.leaseReader.Observe()
 	expected := m.expectedDeployment(m.storage.DeploymentList(), obs.IsGit())
 	hasExpected := expected != nil
@@ -345,7 +453,6 @@ func (m *Manager) driftStatus(now time.Time) *protobuf.Drift {
 		logrus.Errorf("manager: could not read the current system: %s", err)
 	}
 
-	inFlight, inFlightAge := m.inFlightInfo(now)
 	_, c3Holds := m.c3Candidate()
 
 	state := decideDriftState(driftInputs{
@@ -354,7 +461,7 @@ func (m *Manager) driftStatus(now time.Time) *protobuf.Drift {
 		currentEqualsExpected: hasExpected && current == expectedOutPath,
 		inFlight:              inFlight,
 		inFlightAge:           inFlightAge,
-		queued:                m.deployer.HasQueuedWork(),
+		queued:                queued,
 		c3Holds:               c3Holds,
 	})
 

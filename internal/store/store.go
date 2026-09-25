@@ -99,13 +99,24 @@ func (s *Store) deploymentInsert(dpl *protobuf.Deployment) (getsEvicted bool, ev
 	if IsTesting(dpl) {
 		capacity = s.capacityTesting
 	}
+	own := -1
 	for i, d := range s.data.Deployments {
 		if IsTesting(dpl) == IsTesting(d) {
 			older = i
 			qty += 1
 		}
+		if d.Uuid == dpl.Uuid {
+			own = i
+		}
 	}
-	// If the capacity is reached, we remove the older elements
+	// If the capacity is reached, we remove the older elements. A
+	// deployment inserted again once finished (the manager does so for
+	// every deployment) evicts the row NewDeployment appended for it: when
+	// the next deployment already started, the last row is that one's,
+	// and evicting it would leave DeploymentFinished nothing to record.
+	if own >= 0 {
+		older = own
+	}
 	if qty >= capacity {
 		evicted = s.data.Deployments[older]
 		getsEvicted = true

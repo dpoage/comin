@@ -85,7 +85,12 @@ func newLeaseFixture(t *testing.T, previousDeployment *protobuf.Deployment) *lea
 	leasePath := filepath.Join(tmp, "override.json")
 
 	exec := &controllableExecutor{}
-	deployFunc := func(context.Context, string, string) (bool, string, error) { return false, "", nil }
+	// Like switch-to-configuration, a deployment repoints the current
+	// system.
+	deployFunc := func(_ context.Context, outPath, _ string) (bool, string, error) {
+		exec.set(outPath)
+		return false, "", nil
+	}
 	d := deployer.New(s, deployFunc, previousDeployment, "")
 	d.Run(t.Context())
 	// Manager.Run() normally drains DeploymentDoneCh (buffered, size 1);
@@ -93,18 +98,7 @@ func newLeaseFixture(t *testing.T, previousDeployment *protobuf.Deployment) *lea
 	// block the deployer's goroutine forever on that send. Tests that
 	// call f.Run() themselves stop this via f.stopAutoDrain().
 	drainStop := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-t.Context().Done():
-				return
-			case <-drainStop:
-				return
-			case dpl := <-d.DeploymentDoneCh:
-				s.DeploymentInsertAndCommit(dpl)
-			}
-		}
-	}()
+	drainDeployments(t, d, s, drainStop)
 
 	b := builder.New(s, exec, "", "", "", "host", time.Second, time.Second)
 	fe := fetcher.NewFetcher(utils.NewRepositoryMock())
@@ -121,6 +115,55 @@ func newLeaseFixture(t *testing.T, previousDeployment *protobuf.Deployment) *lea
 // tests that call f.Run() and need to drain it themselves instead.
 func (f *leaseFixture) stopAutoDrain() {
 	close(f.drainStop)
+}
+
+// deployerQuiet reports whether d writes nothing more: no deployment in
+// flight, and none it will start (a suspended deployer starts nothing).
+func deployerQuiet(d *deployer.Deployer) bool {
+	inFlight, queued := d.Activity()
+	return !inFlight && (!queued || d.IsSuspended())
+}
+
+// drainDeployments stands in for Manager.Run's DeploymentDoneCh handler,
+// committing each finished deployment to s, until the test ends or stop
+// is closed. Its cleanup, registered after the test's TempDir, waits
+// until d and the drain are done writing into it.
+func drainDeployments(t *testing.T, d *deployer.Deployer, s *store.Store, stop <-chan struct{}) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-t.Context().Done():
+				return
+			case <-stop:
+				return
+			case dpl := <-d.DeploymentDoneCh:
+				s.DeploymentInsertAndCommit(dpl)
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		waitFor(t, func() bool { return deployerQuiet(d) }, "the deployer is quiet")
+		<-done
+	})
+}
+
+// runManager runs m's loop until the test ends. Its cleanup waits until
+// the loop has returned and m's deployer is quiet, so neither writes into
+// the test's TempDir once it is removed.
+func runManager(t *testing.T, m *Manager) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Run(t.Context())
+	}()
+	t.Cleanup(func() {
+		<-done
+		waitFor(t, func() bool { return deployerQuiet(m.deployer) }, "the deployer is quiet")
+	})
 }
 
 func (f *leaseFixture) writeLease(t *testing.T, kind string) {
@@ -141,7 +184,9 @@ func submitAndWait(t *testing.T, f *leaseFixture, g *protobuf.Generation, operat
 	var dpl *protobuf.Deployment
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		dpl = f.deployer.Deployment()
-		assert.NotNil(c, dpl)
+		if !assert.NotNil(c, dpl) {
+			return
+		}
 		assert.Equal(c, g.SelectedCommitId, dpl.Generation.SelectedCommitId)
 		assert.False(c, f.deployer.IsDeploying())
 	}, 3*time.Second, 20*time.Millisecond)
@@ -292,8 +337,10 @@ func TestC3ReleasesAllLeaseAwareTestingDeploysAndReturnsOnceToM(t *testing.T) {
 
 	// A second checkRelease (e.g. the next poll tick) must not return
 	// again: the current deployment is now M itself, not a testing one.
+	// checkRelease submits synchronously, and the deployer is not idle
+	// again until what it submitted has been recorded in the store.
 	f.checkRelease()
-	time.Sleep(100 * time.Millisecond)
+	assert.Eventually(t, f.deployer.Idle, 5*time.Second, 5*time.Millisecond)
 	assert.Equal(t, seeded+1, distinctSwitchDeploymentsOf(f, "m1"))
 	// A new head of B still deploys.
 	_, ok := f.leaseDeployDecision(testingGeneration("t3", "m1"))
@@ -317,7 +364,7 @@ func TestC3ExpectedDeploymentSkipsReleasedTestingHeads(t *testing.T) {
 	// Inserted after M: more recent in DeploymentList order.
 	f.store.DeploymentInsert(xDpl)
 	assert.NoError(t, f.leaseState.MarkLeaseAware(xDpl.Uuid))
-	assert.NoError(t, f.leaseState.MarkReleased(xDpl.Uuid))
+	assert.NoError(t, f.leaseState.Release([]string{xDpl.Uuid}, false))
 
 	got := f.expectedDeployment(f.store.DeploymentList(), true) // git lease live: testing counts
 	assert.NotNil(t, got)
@@ -346,7 +393,8 @@ func TestC3RebootEndedLeaseReturnsNothingAndTargetsMForSwitchLatest(t *testing.T
 		f.exec.set("/nix/store/m1")
 
 		f.checkRelease()
-		time.Sleep(150 * time.Millisecond)
+		assert.Eventually(t, f.deployer.Idle, 5*time.Second, 5*time.Millisecond)
+		assert.True(t, f.leaseState.IsReleased(last.Uuid), "n=%d: C3 decided", n)
 		assert.Equal(t, seeded, distinctSwitchDeploymentsOf(f, "m1"), "n=%d: reboot already returned the machine, comin must not deploy again", n)
 
 		drift := f.driftStatus(time.Now())
@@ -378,12 +426,14 @@ func TestC3NoFetchEventsReturnsWithinOnePollPeriod(t *testing.T) {
 	f.store.DeploymentInsert(x1)
 	assert.NoError(t, f.leaseState.MarkLeaseAware(x1.Uuid))
 	f.writeLease(t, "git")
+	f.exec.set("/nix/store/t1")
 
 	f.SetPollPeriod(30 * time.Millisecond)
-	go f.Run(t.Context())
-	// Let the startup call and at least one tick pass with the lease
-	// still present, proving neither alone triggers the release.
-	time.Sleep(150 * time.Millisecond)
+	runManager(t, f.Manager)
+	// The startup poll has run once it recorded the "held" drift
+	// episode; only then is the lease removed, so the startup poll cannot
+	// be the one that catches the end.
+	assert.Eventually(t, func() bool { return f.leaseState.DriftSince() != nil }, 5*time.Second, 5*time.Millisecond)
 	assert.Equal(t, "t1", f.deployer.Deployment().Generation.GetSelectedCommitId())
 
 	f.removeLease()
@@ -416,11 +466,7 @@ func TestC3DoesNotReleaseWhileDeploymentInFlight(t *testing.T) {
 	deployFunc := func(context.Context, string, string) (bool, string, error) { return false, "", nil }
 	d := deployer.New(s, deployFunc, nil, script)
 	d.Run(t.Context())
-	go func() {
-		for dpl := range d.DeploymentDoneCh {
-			s.DeploymentInsertAndCommit(dpl)
-		}
-	}()
+	drainDeployments(t, d, s, nil)
 
 	m := &Manager{
 		storage:                 s,
@@ -604,11 +650,7 @@ func TestC5ReturningDuringTierDeployMidActivation(t *testing.T) {
 	}
 	d := deployer.New(s, deployFunc, nil, "")
 	d.Run(t.Context())
-	go func() {
-		for dpl := range d.DeploymentDoneCh {
-			s.DeploymentInsertAndCommit(dpl)
-		}
-	}()
+	drainDeployments(t, d, s, nil)
 
 	m := &Manager{
 		storage:                 s,
@@ -679,7 +721,7 @@ func TestC7SwitchLatestTargetsExpectedNotLatestStoreEntry_RebootReleased(t *test
 	}
 	f.store.DeploymentInsert(x)
 	assert.NoError(t, f.leaseState.MarkLeaseAware(x.Uuid))
-	assert.NoError(t, f.leaseState.MarkReleased(x.Uuid))
+	assert.NoError(t, f.leaseState.Release([]string{x.Uuid}, false))
 
 	gen, err := f.resolveExpectedGeneration()
 	assert.NoError(t, err)
@@ -726,11 +768,7 @@ func TestC7SwitchLatestTargetsNewerTestingDeployStillInFlight(t *testing.T) {
 	deployFunc := func(context.Context, string, string) (bool, string, error) { return false, "", nil }
 	d := deployer.New(s, deployFunc, nil, script)
 	d.Run(t.Context())
-	go func() {
-		for dpl := range d.DeploymentDoneCh {
-			s.DeploymentInsertAndCommit(dpl)
-		}
-	}()
+	drainDeployments(t, d, s, nil)
 
 	m := &Manager{
 		storage:                 s,
@@ -755,7 +793,8 @@ func TestC7SwitchLatestTargetsNewerTestingDeployStillInFlight(t *testing.T) {
 	assert.NoError(t, ls.MarkLeaseAware(d.Deployment().Uuid))
 
 	assert.NoError(t, m.SwitchDeploymentLatest())
-	assert.True(t, d.HasQueuedWork(), "the switch-latest request is queued, waiting for the in-flight deploy to actually finish")
+	_, queued := d.Activity()
+	assert.True(t, queued, "the switch-latest request is queued, waiting for the in-flight deploy to actually finish")
 
 	assert.NoError(t, os.WriteFile(marker, []byte("go"), 0644))
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -806,10 +845,14 @@ func TestC7SwitchLatestSurvivesRestart(t *testing.T) {
 		NewConfirmer(bk, Without, 0, ""), NewConfirmer(bk, Without, 0, ""), bk, emptyConfigurationOperations,
 		lease.NewReader(""), ls2)
 
-	go mgr2.Run(t.Context())
+	runManager(t, mgr2)
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Equal(c, "m1", d2.Deployment().Generation.GetSelectedCommitId())
-		assert.Equal(c, "switch", d2.Deployment().Operation)
+		dpl := d2.Deployment()
+		if !assert.NotNil(c, dpl) {
+			return
+		}
+		assert.Equal(c, "m1", dpl.Generation.GetSelectedCommitId())
+		assert.Equal(c, "switch", dpl.Operation)
 	}, 3*time.Second, 20*time.Millisecond)
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.False(c, ls2.PendingSwitchLatest())

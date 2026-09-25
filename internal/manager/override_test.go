@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// waitDeadline bounds every wait for an observable outcome. It is only
+// reached when the outcome never comes.
+const waitDeadline = 15 * time.Second
+
 // rig is a Manager wired the way cmd/run.go wires it: the store and the
 // lease state are loaded from dir (so a second rig on the same dir is a
 // comin restart), the deployer starts from store.LastDeployment(), and the
@@ -44,6 +49,7 @@ type rig struct {
 	lease  string
 	lsPath string
 	cancel context.CancelFunc
+	done   chan struct{}
 
 	mu       sync.Mutex
 	gate     chan struct{}
@@ -60,9 +66,10 @@ func newRig(t *testing.T, dir string) *rig {
 
 // newRigWithRepository is newRig with the repository newRepository builds
 // from the main commit of the last stored deployment, as cmd/run.go does.
-// The fetcher is started, so TriggerFetch runs the whole fetch, evaluate,
-// build, confirm and deploy pipeline. A nil newRepository uses a
-// RepositoryMock and leaves the fetcher stopped.
+// The fetcher is started after the manager is built (as in cmd/run.go),
+// so TriggerFetch runs the whole fetch, evaluate, build, confirm and
+// deploy pipeline. A nil newRepository uses a RepositoryMock and leaves
+// the fetcher stopped.
 func newRigWithRepository(t *testing.T, dir string, newRepository func(mainCommitId string) repository.Repository) *rig {
 	t.Helper()
 	bk := broker.New()
@@ -113,7 +120,6 @@ func newRigWithRepository(t *testing.T, dir string, newRepository func(mainCommi
 		fe = fetcher.NewFetcher(utils.NewRepositoryMock())
 	} else {
 		fe = fetcher.NewFetcher(newRepository(mainCommitId))
-		fe.Start(t.Context())
 	}
 	bc := NewConfirmer(bk, Without, 0, "")
 	bc.Start()
@@ -121,20 +127,39 @@ func newRigWithRepository(t *testing.T, dir string, newRepository func(mainCommi
 	dc.Start()
 	r.m = New(s, prometheus.New(), scheduler.New(), fe, b, r.d, "", r.exec, bc, dc, bk, rigOperations, lease.NewReader(r.lease), ls)
 	r.m.SetPollPeriod(50 * time.Millisecond)
+	if newRepository != nil {
+		fe.Start(t.Context())
+	}
+	// Registered after the test's TempDir, so it runs before the
+	// directory is removed: nothing of this comin process may still be
+	// writing into it by then.
+	t.Cleanup(func() {
+		r.stop()
+		waitFor(t, func() bool {
+			return deployerQuiet(r.d) && !fe.IsFetching() && !b.IsEvaluating() && !b.State().IsBuilding.GetValue()
+		}, "comin is quiescent")
+	})
 	return r
 }
 
 func (r *rig) start(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	r.cancel = cancel
-	go r.m.Run(ctx)
+	r.done = make(chan struct{})
+	go func() {
+		defer close(r.done)
+		r.m.Run(ctx)
+	}()
 }
 
-// stop ends this comin process: its manager loop returns, so it no longer
-// touches the files a restarted rig shares.
+// stop ends this comin process: once it returns, its manager loop has
+// returned, so it no longer touches the files a restarted rig shares.
 func (r *rig) stop() {
+	if r.cancel == nil {
+		return
+	}
 	r.cancel()
-	time.Sleep(100 * time.Millisecond)
+	<-r.done
 }
 
 func (r *rig) holdDeploys() chan struct{} {
@@ -187,22 +212,53 @@ func (r *rig) fetchDeploy(g *protobuf.Generation) string {
 	return "submitted:" + op
 }
 
-// waitIdle waits until the deployer has been idle for a while, long enough
-// for the manager loop to have handled the last finished deployment and
-// for several poll ticks to have run.
-func (r *rig) waitIdle(t *testing.T) {
+func waitFor(t *testing.T, cond func() bool, msgAndArgs ...any) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if r.d.Idle() {
-			time.Sleep(200 * time.Millisecond)
-			if r.d.Idle() {
-				return
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+	require.Eventually(t, cond, waitDeadline, 5*time.Millisecond, msgAndArgs...)
+}
+
+// processed reports whether the manager loop has handled the deployer's
+// current deployment: it is the latest store entry, and a testing one is
+// marked lease-aware.
+func (r *rig) processed() bool {
+	cur := r.d.Deployment()
+	if cur == nil {
+		return true
 	}
-	t.Fatal("the deployer never became idle")
+	ok, last := r.s.LastDeployment()
+	if !ok || last.Uuid != cur.Uuid {
+		return false
+	}
+	return !isTestingDeployment(cur) || r.ls.IsLeaseAware(cur.Uuid)
+}
+
+// waitDeploys waits until the deploy log is exactly want, nothing is
+// queued or in flight, and the manager loop has handled the last
+// deployment. A log that grows past want never matches, so an extra
+// deployment fails the wait.
+func (r *rig) waitDeploys(t *testing.T, want ...string) {
+	t.Helper()
+	if want == nil {
+		want = []string{}
+	}
+	ok := assert.Eventually(t, func() bool {
+		return slices.Equal(r.deployLog(), want) && r.d.Idle() && r.processed()
+	}, waitDeadline, 5*time.Millisecond)
+	if !ok {
+		t.Fatalf("deploy log %v, want %v (idle=%v)", r.deployLog(), want, r.d.Idle())
+	}
+}
+
+// waitDrift waits until nothing is queued or in flight and S4 reports
+// state.
+func (r *rig) waitDrift(t *testing.T, state string) {
+	t.Helper()
+	ok := assert.Eventually(t, func() bool {
+		return r.d.Idle() && r.drift().State == state
+	}, waitDeadline, 5*time.Millisecond)
+	if !ok {
+		t.Fatalf("drift %+v, want state %s (deploys %v)", r.drift(), state, r.deployLog())
+	}
 }
 
 func (r *rig) drift() *protobuf.Drift { return r.m.GetState().Drift }
@@ -211,6 +267,22 @@ func rebuilt(g *protobuf.Generation) *protobuf.Generation {
 	c := proto.CloneOf(g)
 	c.Uuid = g.Uuid + "-rebuilt"
 	return c
+}
+
+// overrideOn deploys m1, then n testing heads t1..tn on it. The hook takes
+// the git lease after the first one.
+func (r *rig) overrideOn(t *testing.T, n int) {
+	t.Helper()
+	r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
+	want := []string{"m1/switch"}
+	r.waitDeploys(t, want...)
+	for i := 1; i <= n; i++ {
+		c := fmt.Sprintf("t%d", i)
+		require.Equal(t, "submitted:test", r.fetchDeploy(testingGeneration(c, "m1")))
+		want = append(want, c+"/test")
+		r.waitDeploys(t, want...)
+	}
+	require.True(t, r.leaseExists(), "the hook took a git lease")
 }
 
 // ---------------------------------------------------------------------
@@ -223,18 +295,12 @@ func rebuilt(g *protobuf.Generation) *protobuf.Generation {
 func TestC3SingleTestingDeployOperatorEndReturnsOnce(t *testing.T) {
 	r := newRig(t, t.TempDir())
 	r.start(t)
-	r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-	r.waitIdle(t)
-	assert.Equal(t, "submitted:test", r.fetchDeploy(testingGeneration("t1", "m1")))
-	r.waitIdle(t)
-	require.True(t, r.leaseExists(), "the hook took a git lease")
+	r.overrideOn(t, 1)
 
 	require.NoError(t, os.Remove(r.lease))
-	r.waitIdle(t)
-	time.Sleep(300 * time.Millisecond) // several more poll periods: still exactly one return
-	assert.Equal(t, []string{"m1/switch", "t1/test", "m1/switch"}, r.deployLog())
+	r.waitDeploys(t, "m1/switch", "t1/test", "m1/switch")
+	r.waitDrift(t, "none")
 	assert.Equal(t, "/nix/store/m1", r.exec.get())
-	assert.Equal(t, "none", r.drift().State)
 }
 
 // Same, with M deployed by an earlier comin process: the restarted
@@ -244,22 +310,157 @@ func TestC3SingleTestingDeployAfterRestartReturnsOnce(t *testing.T) {
 	r1 := newRig(t, dir)
 	r1.start(t)
 	r1.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-	r1.waitIdle(t)
+	r1.waitDeploys(t, "m1/switch")
 	r1.stop()
 
 	r2 := newRig(t, dir)
 	r2.exec.set("/nix/store/m1")
 	r2.start(t)
 	assert.Equal(t, "submitted:test", r2.fetchDeploy(testingGeneration("t1", "m1")))
-	r2.waitIdle(t)
+	r2.waitDeploys(t, "t1/test")
 	require.True(t, r2.leaseExists())
 
 	require.NoError(t, os.Remove(r2.lease))
-	r2.waitIdle(t)
-	time.Sleep(300 * time.Millisecond)
-	assert.Equal(t, []string{"t1/test", "m1/switch"}, r2.deployLog())
+	r2.waitDeploys(t, "t1/test", "m1/switch")
+	r2.waitDrift(t, "none")
 	assert.Equal(t, "/nix/store/m1", r2.exec.get())
-	assert.Equal(t, "none", r2.drift().State)
+}
+
+// ---------------------------------------------------------------------
+// P-C3-ONCE: one return decision per ended override
+// ---------------------------------------------------------------------
+
+// A git lease ends by reboot: the machine boots M, the lease is gone, and
+// comin restarts. C3 decides once (nothing to return). A later
+// out-of-band change is leaseless drift, never reverted, including after
+// another restart. Mutant: no consumed check.
+func TestC3OnceRebootEndedLeaseThenOutOfBandChange(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d testing deploys", n), func(t *testing.T) {
+			dir := t.TempDir()
+			r1 := newRig(t, dir)
+			r1.start(t)
+			r1.overrideOn(t, n)
+			r1.stop()
+			require.NoError(t, os.Remove(r1.lease))
+
+			r2 := newRig(t, dir)
+			r2.exec.set("/nix/store/m1")
+			r2.start(t)
+			last := r2.d.Deployment()
+			waitFor(t, func() bool { return r2.ls.IsReleased(last.Uuid) }, "C3 decided")
+			r2.waitDrift(t, "none")
+
+			r2.exec.set("/nix/store/break-glass")
+			r2.waitDrift(t, "leaseless")
+			assert.Empty(t, r2.deployLog())
+			r2.stop()
+
+			r3 := newRig(t, dir)
+			r3.exec.set("/nix/store/break-glass")
+			r3.start(t)
+			r3.waitDrift(t, "leaseless")
+			assert.Empty(t, r3.deployLog())
+		})
+	}
+}
+
+// A git lease ends by reboot, later a closure override is applied out of
+// band and ends. Whether to return a closure is the lease tool's
+// decision (it calls switch-latest), never C3's. Mutant: no consumed
+// check.
+func TestC3OnceClosureLeaseAfterRebootEndedGitLease(t *testing.T) {
+	dir := t.TempDir()
+	r1 := newRig(t, dir)
+	r1.start(t)
+	r1.overrideOn(t, 1)
+	r1.stop()
+	require.NoError(t, os.Remove(r1.lease))
+
+	r2 := newRig(t, dir)
+	r2.exec.set("/nix/store/m1")
+	r2.start(t)
+	last := r2.d.Deployment()
+	waitFor(t, func() bool { return r2.ls.IsReleased(last.Uuid) }, "C3 decided")
+	r2.waitDrift(t, "none")
+
+	r2.writeLease(t, "closure")
+	r2.exec.set("/nix/store/closure-c")
+	r2.waitDrift(t, "held")
+	require.NoError(t, os.Remove(r2.lease))
+	r2.waitDrift(t, "leaseless")
+	assert.Empty(t, r2.deployLog())
+	assert.Equal(t, "/nix/store/closure-c", r2.exec.get())
+}
+
+// comin restarts after C3 released the override but before the return
+// deployed: the decision is on disk, so the restarted comin returns
+// exactly once. Mutant: the return is not recorded with the release.
+func TestC3DecisionSurvivesRestartBeforeReturn(t *testing.T) {
+	dir := t.TempDir()
+	r1 := newRig(t, dir)
+	r1.start(t)
+	r1.overrideOn(t, 1)
+	x := r1.d.Deployment()
+
+	// The deployer takes nothing more, so the return stays queued.
+	r1.d.Suspend()
+	require.NoError(t, os.Remove(r1.lease))
+	waitFor(t, func() bool {
+		onDisk, err := leasestate.Load(r1.lsPath)
+		return err == nil && onDisk.IsReleased(x.Uuid)
+	}, "C3 decided")
+	r1.stop()
+	require.Equal(t, []string{"m1/switch", "t1/test"}, r1.deployLog())
+
+	r2 := newRig(t, dir)
+	r2.exec.set("/nix/store/t1")
+	r2.start(t)
+	r2.waitDeploys(t, "m1/switch")
+	r2.waitDrift(t, "none")
+	assert.False(t, r2.ls.PendingSwitchLatest())
+}
+
+// Ruling 1: a system changed out of band while the git lease was held is
+// not comin's; when the lease ends C3 records its decision without a
+// return. Mutant: no guard.
+func TestC3BreakGlassDuringGitLeaseIsNotReturned(t *testing.T) {
+	r := newRig(t, t.TempDir())
+	r.start(t)
+	r.overrideOn(t, 1)
+	x := r.d.Deployment()
+
+	r.exec.set("/nix/store/break-glass")
+	require.NoError(t, os.Remove(r.lease))
+	r.waitDrift(t, "leaseless")
+	assert.True(t, r.ls.IsReleased(x.Uuid))
+	assert.Equal(t, []string{"m1/switch", "t1/test"}, r.deployLog())
+	assert.Equal(t, "/nix/store/break-glass", r.exec.get())
+}
+
+// A tier commit fetched after the override ended but before C3 decided
+// is deferred, not deployed ahead of the return: deploying it first would
+// leave the override unreleased and its testing head selectable again.
+// With an hour-long poll period, only the poll the manager runs after
+// each deployment and the test's own poll run C3. Once the return has
+// finished, the deferred commit is offered. Mutant: the gate admits main
+// generations as soon as the lease file is gone.
+func TestMainFetchedBeforeC3DecidesIsDeferred(t *testing.T) {
+	r := newRig(t, t.TempDir())
+	r.m.SetPollPeriod(time.Hour)
+	r.start(t)
+	r.overrideOn(t, 1)
+	x := r.d.Deployment()
+	// The poll after t1's deployment recorded the held episode: it has
+	// finished, so no poll runs until the test's.
+	waitFor(t, func() bool { return r.ls.DriftSince() != nil }, "the post-deployment poll ran")
+
+	require.NoError(t, os.Remove(r.lease))
+	assert.Equal(t, "skipped:lease-decision", r.fetchDeploy(mainGeneration("m2", "/nix/store/m2")))
+	assert.False(t, r.ls.IsReleased(x.Uuid))
+	r.m.poll(time.Now().UTC())
+	r.waitDeploys(t, "m1/switch", "t1/test", "m1/switch", "m2/switch")
+	assert.True(t, r.ls.IsReleased(x.Uuid))
 }
 
 // ---------------------------------------------------------------------
@@ -273,34 +474,26 @@ func TestC3ReleasedHeadNotRedeployedAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	r1 := newRig(t, dir)
 	r1.start(t)
-	r1.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-	r1.waitIdle(t)
-	r1.fetchDeploy(testingGeneration("t1", "m1"))
-	r1.waitIdle(t)
-	r1.fetchDeploy(testingGeneration("t2", "m1"))
-	r1.waitIdle(t)
+	r1.overrideOn(t, 2)
 	require.NoError(t, os.Remove(r1.lease))
-	r1.waitIdle(t)
-	require.Equal(t, []string{"m1/switch", "t1/test", "t2/test", "m1/switch"}, r1.deployLog())
+	r1.waitDeploys(t, "m1/switch", "t1/test", "t2/test", "m1/switch")
 	r1.stop()
 
 	r2 := newRig(t, dir)
 	r2.exec.set("/nix/store/m1")
 	r2.start(t)
 	assert.Equal(t, "skipped:lease-decision", r2.fetchDeploy(rebuilt(testingGeneration("t2", "m1"))))
-	r2.waitIdle(t)
+	r2.waitDrift(t, "none")
 	assert.Empty(t, r2.deployLog())
 	assert.False(t, r2.leaseExists())
-	assert.Equal(t, "none", r2.drift().State)
 
 	// A new head of the branch still deploys.
 	assert.Equal(t, "submitted:test", r2.fetchDeploy(testingGeneration("t3", "m1")))
-	r2.waitIdle(t)
-	assert.Equal(t, []string{"t3/test"}, r2.deployLog())
+	r2.waitDeploys(t, "t3/test")
 }
 
 // ---------------------------------------------------------------------
-// C3: a tier commit frozen by the lease deploys once the lease ends
+// C1: a tier commit frozen by the lease deploys once the lease ends
 // ---------------------------------------------------------------------
 
 // Mutant: drop the frozen generation instead of deferring it.
@@ -308,37 +501,27 @@ func TestC1FrozenTierCommitDeploysAfterLeaseEnds(t *testing.T) {
 	t.Run("git override", func(t *testing.T) {
 		r := newRig(t, t.TempDir())
 		r.start(t)
-		r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-		r.waitIdle(t)
-		r.fetchDeploy(testingGeneration("t1", "m1"))
-		r.waitIdle(t)
-		require.True(t, r.leaseExists())
+		r.overrideOn(t, 1)
 		assert.Equal(t, "skipped:lease-decision", r.fetchDeploy(mainGeneration("m2", "/nix/store/m2")))
-		r.waitIdle(t)
-		require.Equal(t, []string{"m1/switch", "t1/test"}, r.deployLog())
 
 		require.NoError(t, os.Remove(r.lease))
-		r.waitIdle(t)
-		time.Sleep(300 * time.Millisecond)
 		// The C3 return to the expected generation, then the frozen
 		// tier commit, offered once.
-		assert.Equal(t, []string{"m1/switch", "t1/test", "m1/switch", "m2/switch"}, r.deployLog())
+		r.waitDeploys(t, "m1/switch", "t1/test", "m1/switch", "m2/switch")
+		r.waitDrift(t, "none")
 		assert.Equal(t, "/nix/store/m2", r.exec.get())
-		assert.Equal(t, "none", r.drift().State)
 	})
 	t.Run("session lease", func(t *testing.T) {
 		r := newRig(t, t.TempDir())
 		r.start(t)
 		r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-		r.waitIdle(t)
+		r.waitDeploys(t, "m1/switch")
 		r.writeLease(t, "session")
 		assert.Equal(t, "skipped:lease-decision", r.fetchDeploy(mainGeneration("m2", "/nix/store/m2")))
-		r.waitIdle(t)
 
 		require.NoError(t, os.Remove(r.lease))
-		r.waitIdle(t)
-		time.Sleep(300 * time.Millisecond)
-		assert.Equal(t, []string{"m1/switch", "m2/switch"}, r.deployLog())
+		r.waitDeploys(t, "m1/switch", "m2/switch")
+		r.waitDrift(t, "none")
 	})
 }
 
@@ -352,33 +535,27 @@ func TestC1FrozenTierCommitDeploysAfterLeaseEnds(t *testing.T) {
 func TestC7SwitchLatestSurvivesALaterSubmit(t *testing.T) {
 	r := newRig(t, t.TempDir())
 	r.start(t)
-	r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-	r.waitIdle(t)
-	r.fetchDeploy(testingGeneration("t1", "m1"))
-	r.waitIdle(t)
-	require.True(t, r.leaseExists())
+	r.overrideOn(t, 1)
 
 	gate := r.holdDeploys()
 	r.fetchDeploy(testingGeneration("t1b", "m1"))
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, func() bool { return slices.Contains(r.deployLog(), "t1b/test") }, "t1b in flight")
 	require.NoError(t, r.m.SwitchDeploymentLatest()) // persist
 	assert.Equal(t, "submitted:test", r.fetchDeploy(testingGeneration("t2", "m1")))
 	r.releaseDeploys(gate)
-	r.waitIdle(t)
 
-	assert.Equal(t, []string{"m1/switch", "t1/test", "t1b/test", "t1b/switch", "t2/test"}, r.deployLog())
+	r.waitDeploys(t, "m1/switch", "t1/test", "t1b/test", "t1b/switch", "t2/test")
 	assert.False(t, r.ls.PendingSwitchLatest())
 }
 
 // Nothing to switch to: the request fails the way be6025e's did, and
 // nothing is left pending for a later restart.
 func TestC7SwitchLatestWithEmptyStoreFails(t *testing.T) {
-	dir := t.TempDir()
-	r := newRig(t, dir)
+	r := newRig(t, t.TempDir())
 	r.start(t)
 	err := r.m.SwitchDeploymentLatest()
 	assert.EqualError(t, err, "manager: no previous deployment")
-	r.waitIdle(t)
+	assert.True(t, r.d.Idle())
 	assert.Empty(t, r.deployLog())
 	reloaded, err := leasestate.Load(r.lsPath)
 	require.NoError(t, err)
@@ -397,12 +574,11 @@ func TestC7PendingSwitchLatestClearedWhenResolutionFails(t *testing.T) {
 	r := newRig(t, dir)
 	require.True(t, r.ls.PendingSwitchLatest())
 	r.start(t)
-	r.waitIdle(t)
+	waitFor(t, func() bool {
+		onDisk, err := leasestate.Load(r.lsPath)
+		return err == nil && !onDisk.PendingSwitchLatest() && r.d.Idle()
+	}, "the pending request was settled")
 	assert.Empty(t, r.deployLog())
-	assert.False(t, r.ls.PendingSwitchLatest())
-	reloaded, err := leasestate.Load(r.lsPath)
-	require.NoError(t, err)
-	assert.False(t, reloaded.PendingSwitchLatest())
 }
 
 // switch-latest is requested while the newer testing deploy is still
@@ -412,23 +588,18 @@ func TestC7PendingSwitchLatestClearedWhenResolutionFails(t *testing.T) {
 func TestC7SwitchLatestRequestedWhileNewerDeployRunning(t *testing.T) {
 	r := newRig(t, t.TempDir())
 	r.start(t)
-	r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-	r.waitIdle(t)
-	r.fetchDeploy(testingGeneration("t1", "m1"))
-	r.waitIdle(t)
-	require.True(t, r.leaseExists())
+	r.overrideOn(t, 1)
 
 	gate := r.holdDeploys()
 	r.fetchDeploy(testingGeneration("t2", "m1"))
-	require.Eventually(t, func() bool {
+	waitFor(t, func() bool {
 		d := r.d.Deployment()
 		return d.Generation.GetSelectedCommitId() == "t2" && d.Status == store.StatusToString(store.Running)
-	}, 3*time.Second, 10*time.Millisecond)
+	})
 	require.NoError(t, r.m.SwitchDeploymentLatest())
 	r.releaseDeploys(gate)
-	r.waitIdle(t)
 
-	assert.Equal(t, []string{"m1/switch", "t1/test", "t2/test", "t2/switch"}, r.deployLog())
+	r.waitDeploys(t, "m1/switch", "t1/test", "t2/test", "t2/switch")
 }
 
 // ---------------------------------------------------------------------
@@ -441,14 +612,10 @@ func TestC7SwitchLatestRequestedWhileNewerDeployRunning(t *testing.T) {
 func TestC3ReturnsWhenCurrentTestingDeployFailed(t *testing.T) {
 	r := newRig(t, t.TempDir())
 	r.start(t)
-	r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-	r.waitIdle(t)
-	r.fetchDeploy(testingGeneration("t1", "m1"))
-	r.waitIdle(t)
-	require.True(t, r.leaseExists())
+	r.overrideOn(t, 1)
 	r.failDeploysOf("/nix/store/t2")
 	r.fetchDeploy(testingGeneration("t2", "m1"))
-	r.waitIdle(t)
+	r.waitDeploys(t, "m1/switch", "t1/test", "t2/test")
 	require.Equal(t, store.StatusToString(store.Failed), r.d.Deployment().Status)
 
 	states := map[string]bool{}
@@ -466,17 +633,15 @@ func TestC3ReturnsWhenCurrentTestingDeployFailed(t *testing.T) {
 				statesMu.Lock()
 				states[s] = true
 				statesMu.Unlock()
-				time.Sleep(5 * time.Millisecond)
 			}
 		}
 	}()
 	require.NoError(t, os.Remove(r.lease))
-	r.waitIdle(t)
-	time.Sleep(200 * time.Millisecond)
+	r.waitDeploys(t, "m1/switch", "t1/test", "t2/test", "m1/switch")
+	r.waitDrift(t, "none")
 	close(stop)
 	<-done
 
-	assert.Equal(t, []string{"m1/switch", "t1/test", "t2/test", "m1/switch"}, r.deployLog())
 	for _, d := range r.s.DeploymentList() {
 		if isTestingDeployment(d) {
 			assert.True(t, r.ls.IsReleased(d.Uuid), "testing deployment %s released", d.Generation.GetSelectedCommitId())
@@ -485,45 +650,44 @@ func TestC3ReturnsWhenCurrentTestingDeployFailed(t *testing.T) {
 	statesMu.Lock()
 	defer statesMu.Unlock()
 	assert.False(t, states["leaseless"], "observed states: %v", states)
-	assert.Equal(t, "none", r.drift().State)
 }
 
 // ---------------------------------------------------------------------
 // C1/C2 re-applied when a queued generation starts
 // ---------------------------------------------------------------------
 
-// Mutant: gate only at confirm time.
+// The queued generation is refused when the deployer takes it, so the
+// deployer only becomes idle with the log unchanged. Mutant: gate only at
+// confirm time.
 func TestDeployGateReappliedWhenQueuedGenerationStarts(t *testing.T) {
 	t.Run("main queued, lease appears", func(t *testing.T) {
 		r := newRig(t, t.TempDir())
 		r.start(t)
 		r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-		r.waitIdle(t)
+		r.waitDeploys(t, "m1/switch")
 		gate := r.holdDeploys()
 		assert.Equal(t, "submitted:test", r.fetchDeploy(testingGeneration("t1", "m1")))
-		time.Sleep(100 * time.Millisecond)
+		waitFor(t, func() bool { return slices.Contains(r.deployLog(), "t1/test") }, "t1 in flight")
 		// No lease yet: the tier commit passes the gate and queues
 		// behind the testing deploy, whose hook then takes the lease.
 		assert.Equal(t, "submitted:switch", r.fetchDeploy(mainGeneration("m2", "/nix/store/m2")))
 		r.releaseDeploys(gate)
-		r.waitIdle(t)
+		r.waitDeploys(t, "m1/switch", "t1/test")
 		assert.True(t, r.leaseExists())
-		assert.Equal(t, []string{"m1/switch", "t1/test"}, r.deployLog())
-		assert.Equal(t, "held", r.drift().State)
+		r.waitDrift(t, "held")
 	})
 	t.Run("testing queued, session lease appears", func(t *testing.T) {
 		r := newRig(t, t.TempDir())
 		r.start(t)
 		r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-		r.waitIdle(t)
+		r.waitDeploys(t, "m1/switch")
 		gate := r.holdDeploys()
 		assert.Equal(t, "submitted:test", r.fetchDeploy(testingGeneration("t1", "m1")))
-		time.Sleep(100 * time.Millisecond)
+		waitFor(t, func() bool { return slices.Contains(r.deployLog(), "t1/test") }, "t1 in flight")
 		assert.Equal(t, "submitted:test", r.fetchDeploy(testingGeneration("t2", "m1")))
 		r.writeLease(t, "session")
 		r.releaseDeploys(gate)
-		r.waitIdle(t)
-		assert.Equal(t, []string{"m1/switch", "t1/test"}, r.deployLog())
+		r.waitDeploys(t, "m1/switch", "t1/test")
 	})
 }
 
@@ -531,55 +695,68 @@ func TestDeployGateReappliedWhenQueuedGenerationStarts(t *testing.T) {
 // S4: drift is evaluated without status queries
 // ---------------------------------------------------------------------
 
-// Mutant: evaluate drift only when the status is queried.
+// Past the status query newDriftRig makes (Run serves it only once its
+// startup poll is over), nothing queries the status: only the test's
+// polls can record or clear `since`, stamped with the poll's time. The
+// poll period is an hour, so no other poll runs. Mutant: evaluate drift
+// only when the status is queried.
 func TestDriftSinceRecordedWithoutStatusQueries(t *testing.T) {
-	t.Run("since within one poll period of the drift start", func(t *testing.T) {
-		r := newRig(t, t.TempDir())
-		r.s.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: mainGeneration("m1", "/nix/store/m1")})
-		r.exec.set("/nix/store/m1")
-		r.start(t)
-		time.Sleep(150 * time.Millisecond)
-		start := time.Now()
-		r.exec.set("/nix/store/break-glass")
-		time.Sleep(500 * time.Millisecond)
-
+	sinceOnDisk := func(r *rig) *time.Time {
 		onDisk, err := leasestate.Load(r.lsPath)
-		require.NoError(t, err)
-		since := onDisk.DriftSince()
-		require.NotNil(t, since, "no status query was made, the poll must have recorded the episode")
-		assert.WithinDuration(t, start, *since, 2*r.m.pollPeriod)
+		if err != nil {
+			return nil
+		}
+		return onDisk.DriftSince()
+	}
+	newDriftRig := func(t *testing.T, current string) *rig {
+		r := newRig(t, t.TempDir())
+		r.m.SetPollPeriod(time.Hour)
+		r.s.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: mainGeneration("m1", "/nix/store/m1")})
+		r.exec.set(current)
+		r.start(t)
+		r.drift()
+		return r
+	}
+	t.Run("since is the time of the poll that saw the drift", func(t *testing.T) {
+		r := newDriftRig(t, "/nix/store/m1")
+		require.Nil(t, sinceOnDisk(r))
+		r.exec.set("/nix/store/break-glass")
+		at := time.Now().UTC()
+		r.m.poll(at)
+		since := sinceOnDisk(r)
+		require.NotNil(t, since, "the poll recorded the episode")
+		assert.True(t, since.Equal(at), "since %s, want %s", since, at)
 	})
 	t.Run("a new episode gets a new since", func(t *testing.T) {
-		r := newRig(t, t.TempDir())
-		r.s.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: mainGeneration("m1", "/nix/store/m1")})
-		r.exec.set("/nix/store/break-glass-a")
-		r.start(t)
-		time.Sleep(300 * time.Millisecond)
+		r := newDriftRig(t, "/nix/store/break-glass-a")
+		require.NotNil(t, sinceOnDisk(r), "episode A recorded")
 		r.exec.set("/nix/store/m1")
-		time.Sleep(300 * time.Millisecond)
-		startB := time.Now()
+		r.m.poll(time.Now().UTC())
+		require.Nil(t, sinceOnDisk(r), "episode A is over")
 		r.exec.set("/nix/store/break-glass-b")
-		time.Sleep(500 * time.Millisecond)
-
-		d := r.drift()
-		assert.Equal(t, "leaseless", d.State)
-		require.NotNil(t, d.Since)
-		assert.WithinDuration(t, startB, d.Since.AsTime(), 2*r.m.pollPeriod)
+		atB := time.Now().UTC()
+		r.m.poll(atB)
+		since := sinceOnDisk(r)
+		require.NotNil(t, since, "episode B recorded")
+		assert.True(t, since.Equal(atB), "since %s, want %s", since, atB)
 	})
 }
 
 // ---------------------------------------------------------------------
-// Corrupt lease state: nothing is released (C3(d))
+// Corrupt lease state
 // ---------------------------------------------------------------------
 
+// A truncated lease-state file loses every mark. Nothing is released or
+// returned (no deployment counts as lease-aware), and every testing head
+// deployed before the loss counts as ended: the deploy gate refuses it
+// and the fetcher's selection excludes it. (The deployer itself would
+// skip t1 here as its previous deployment, so the gate is asked
+// directly.) Mutant: silent reset.
 func TestCorruptLeaseStateReleasesNothing(t *testing.T) {
 	dir := t.TempDir()
 	r1 := newRig(t, dir)
 	r1.start(t)
-	r1.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-	r1.waitIdle(t)
-	r1.fetchDeploy(testingGeneration("t1", "m1"))
-	r1.waitIdle(t)
+	r1.overrideOn(t, 1)
 	r1.stop()
 
 	content, err := os.ReadFile(r1.lsPath)
@@ -591,13 +768,19 @@ func TestCorruptLeaseStateReleasesNothing(t *testing.T) {
 	require.Error(t, r2.lsErr, "a truncated lease-state file is reported, not silently reset")
 	r2.exec.set("/nix/store/t1")
 	r2.start(t)
-	r2.waitIdle(t)
-	time.Sleep(200 * time.Millisecond)
+	r2.waitDrift(t, "leaseless")
 	assert.Empty(t, r2.deployLog(), "no lease-aware mark survived, so nothing is released or returned")
 	for _, d := range r2.s.DeploymentList() {
 		assert.False(t, r2.ls.IsReleased(d.Uuid))
 	}
-	assert.Equal(t, "leaseless", r2.drift().State)
+	_, ok := r2.m.leaseDeployDecision(rebuilt(testingGeneration("t1", "m1")))
+	assert.False(t, ok, "the gate refuses a testing head deployed before the loss")
+	assert.True(t, r2.m.testingSelection().Excluded[testingHead(testingGeneration("t1", "m1"))], "the selection excludes it")
+
+	// The loss is recorded, so it still holds after another restart.
+	reloaded, err := leasestate.Load(r2.lsPath)
+	require.NoError(t, err)
+	assert.NotNil(t, reloaded.MarksLostAt())
 }
 
 // ---------------------------------------------------------------------
@@ -611,7 +794,7 @@ func TestProductionGoroutinesAreRaceFree(t *testing.T) {
 	r := newRig(t, t.TempDir())
 	r.start(t)
 	r.fetchDeploy(mainGeneration("m0", "/nix/store/m0"))
-	r.waitIdle(t)
+	r.waitDeploys(t, "m0/switch")
 
 	stop := make(chan struct{})
 	statusDone := make(chan struct{})
@@ -641,7 +824,30 @@ func TestProductionGoroutinesAreRaceFree(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	<-switchDone
-	r.waitIdle(t)
+	waitFor(t, func() bool { return r.d.Idle() && r.processed() })
 	close(stop)
 	<-statusDone
+}
+
+// ---------------------------------------------------------------------
+// overrideLeaseFile null: be6025e's testing selection
+// ---------------------------------------------------------------------
+
+// Ruling 2: with the lease reader disabled, the fetcher's testing
+// selection is the default one, whatever the lease state holds. Mutant:
+// build the selection without checking that the feature is enabled.
+func TestNullLeaseFileKeepsDefaultTestingSelection(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	f.store.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: mainGeneration("m1", "/nix/store/m1")})
+	f.store.DeploymentInsert(&protobuf.Deployment{Uuid: "t1-dpl", Operation: "test", Status: store.StatusToString(store.Done), Generation: testingGeneration("t1", "m1")})
+	require.NoError(t, f.leaseState.MarkLeaseAware("t1-dpl"))
+	require.NoError(t, f.leaseState.Release([]string{"t1-dpl"}, false))
+	f.writeLease(t, "git")
+
+	enabled := f.testingSelection()
+	require.Equal(t, "m1", enabled.Base, "sanity: with the feature on, the selection is not the default")
+	require.NotEmpty(t, enabled.Excluded)
+
+	f.Manager.leaseReader = lease.NewReader("")
+	assert.Equal(t, repository.TestingSelection{}, f.testingSelection())
 }

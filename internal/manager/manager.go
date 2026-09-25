@@ -115,6 +115,7 @@ func New(s *store.Store,
 		pollPeriod:              DefaultPollPeriod,
 	}
 	deployer.SetAdmission(m.admitQueued)
+	fetcher.SetTestingSelection(m.testingSelection)
 	// A switch-latest request made before a restart and never resolved
 	// is re-armed here, before the gRPC server can accept a new one, so
 	// a request arriving during startup is not deployed twice.
@@ -183,10 +184,14 @@ func (m *Manager) resolveExpectedGeneration() (*protobuf.Generation, error) {
 // generation, so it clears the persisted pending flag either way.
 func (m *Manager) resolveSwitchLatest() (*protobuf.Generation, error) {
 	g, err := m.resolveExpectedGeneration()
-	if cerr := m.leaseState.SetPendingSwitchLatest(false); cerr != nil {
-		logrus.Errorf("manager: could not clear the pending switch-latest request: %s", cerr)
-	}
+	m.clearPendingSwitchLatest()
 	return g, err
+}
+
+func (m *Manager) clearPendingSwitchLatest() {
+	if err := m.leaseState.SetPendingSwitchLatest(false); err != nil {
+		logrus.Errorf("manager: could not clear the pending switch-latest request: %s", err)
+	}
 }
 
 func (m *Manager) Suspend() error {

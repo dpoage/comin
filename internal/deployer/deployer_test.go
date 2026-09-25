@@ -83,7 +83,7 @@ func TestDeployerSubmit(t *testing.T) {
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.False(c, d.IsDeploying())
 		assert.Equal(c, "profile-path", d.Deployment().ProfilePath)
-		assert.Nil(t, d.GenerationToDeploy)
+		assert.Nil(c, d.GenerationToDeploy)
 	}, 5*time.Second, 100*time.Millisecond)
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -116,13 +116,13 @@ func TestDeployerSuspend(t *testing.T) {
 
 	d.Submit(&protobuf.Generation{SelectedCommitId: "commit-1"}, "test")
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.True(t, d.RunnerIsSuspended())
+		assert.True(c, d.RunnerIsSuspended())
 	}, 3*time.Second, 100*time.Millisecond)
 
 	d.Resume()
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.False(t, d.RunnerIsSuspended())
-		assert.True(t, d.IsDeploying())
+		assert.False(c, d.RunnerIsSuspended())
+		assert.True(c, d.IsDeploying())
 	}, 3*time.Second, 100*time.Millisecond)
 }
 
@@ -160,8 +160,11 @@ func TestSubmitSkipsIdenticalGenerationAfterRestart(t *testing.T) {
 	d.Run(t.Context())
 
 	// Same generation, same operation, no lease change: not resubmitted.
+	// Submit queues synchronously, and the deployer is not idle again
+	// before a queued deployment has called deployFunc, so an idle
+	// deployer with no call means nothing was queued.
 	d.Submit(g, "switch")
-	time.Sleep(200 * time.Millisecond)
+	assert.True(t, d.Idle())
 	assert.Equal(t, int32(0), atomic.LoadInt32(&deployCount))
 }
 
@@ -190,16 +193,18 @@ func TestSubmitLatestResolvesAtDeployTime(t *testing.T) {
 		assert.True(c, d.IsDeploying())
 	}, 3*time.Second, 20*time.Millisecond)
 
-	// SubmitLatest while busy: the resolver must not run yet.
+	// SubmitLatest while busy: the resolver must not run yet. The
+	// deployer is blocked inside deployFunc, so it cannot reach the
+	// resolver; only a resolver called by SubmitLatest itself would run.
 	var resolveCalls int32
 	target := &protobuf.Generation{SelectedCommitId: "commit-latest"}
 	d.SubmitLatest(func() (*protobuf.Generation, error) {
 		atomic.AddInt32(&resolveCalls, 1)
 		return target, nil
 	})
-	time.Sleep(150 * time.Millisecond)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&resolveCalls))
-	assert.True(t, d.HasQueuedWork())
+	_, queued := d.Activity()
+	assert.True(t, queued)
 
 	// Let the first deployment finish: only now must the resolver run,
 	// and the deployment it produces uses "switch".

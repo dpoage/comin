@@ -107,9 +107,7 @@ var runCmd = &cobra.Command{
 		}
 
 		fetcher := fetcher.NewFetcher(repository)
-		fetcher.Start(cmd.Context())
 		sched := scheduler.New()
-		sched.FetchRemotes(fetcher, cfg.Remotes)
 
 		builder := builder.New(store, executor, gitConfig.Path, gitConfig.Dir, cfg.SystemAttr, cfg.Hostname, 30*time.Minute, 30*time.Minute)
 		deployer := deployer.New(store, executor.Deploy, lastDeployment, cfg.PostDeploymentCommand)
@@ -145,6 +143,10 @@ var runCmd = &cobra.Command{
 		}
 
 		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, leaseReader, leaseState)
+		// The manager installs the fetcher's testing selection, so the
+		// first fetch starts only once it exists.
+		fetcher.Start(cmd.Context())
+		sched.FetchRemotes(fetcher, cfg.Remotes)
 
 		http.Serve(manager,
 			metrics,

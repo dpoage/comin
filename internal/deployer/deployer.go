@@ -218,12 +218,15 @@ func (d *Deployer) SetAdmission(admit AdmissionFunc) {
 	d.admit = admit
 }
 
-// HasQueuedWork reports whether a deployment request (concrete or a
-// switch-latest resolver) is waiting for the deployer to start it.
-func (d *Deployer) HasQueuedWork() bool {
+// Activity reports, as one snapshot, whether a deployment is in flight
+// (its post-deployment command included) and whether a deployment request
+// (concrete or a switch-latest resolver) is waiting for the deployer to
+// start it. A request moves from queued to in flight under the same lock,
+// so a caller never sees it in neither.
+func (d *Deployer) Activity() (inFlight, queued bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.hasQueuedWorkLocked()
+	return d.isDeploying.Load(), d.hasQueuedWorkLocked()
 }
 
 func (d *Deployer) hasQueuedWorkLocked() bool {

@@ -28,8 +28,26 @@ type repository struct {
 	gpgPubliKeys     []string
 }
 
+// TestingHead names the head of a testing branch.
+type TestingHead struct {
+	Remote string
+	Branch string
+	Commit string
+}
+
+// TestingSelection adjusts how Update picks a testing-branch head. The
+// zero value is comin's default: a testing head is selected when it
+// descends from the fetched main head.
+type TestingSelection struct {
+	// Base, when not empty, is the commit a testing head must descend
+	// from, in place of the fetched main head.
+	Base string
+	// Excluded testing heads are never selected.
+	Excluded map[TestingHead]bool
+}
+
 type Repository interface {
-	FetchAndUpdate(ctx context.Context, remoteNames []string) (rsCh chan *pb.RepositoryStatus)
+	FetchAndUpdate(ctx context.Context, remoteNames []string, testing TestingSelection) (rsCh chan *pb.RepositoryStatus)
 	// GetRepositoryStatus is currently not thread safe and is only used to initialize the fetcher
 	GetRepositoryStatus() *pb.RepositoryStatus
 	// IsAncestor reports whether the commit base is the commit top or
@@ -88,12 +106,12 @@ func (r *repository) IsAncestor(base, top string) (bool, error) {
 	return isAncestor(repo, plumbing.NewHash(base), plumbing.NewHash(top))
 }
 
-func (r *repository) FetchAndUpdate(ctx context.Context, remoteNames []string) (rsCh chan *pb.RepositoryStatus) {
+func (r *repository) FetchAndUpdate(ctx context.Context, remoteNames []string, testing TestingSelection) (rsCh chan *pb.RepositoryStatus) {
 	rsCh = make(chan *pb.RepositoryStatus)
 	go func() {
 		// FIXME: switch to the FetchContext to clean resource up on timeout
 		r.Fetch(remoteNames)
-		_ = r.Update()
+		_ = r.Update(testing)
 		rsCh <- proto.CloneOf(r.RepositoryStatus)
 	}()
 	return rsCh
@@ -122,7 +140,7 @@ func (r *repository) Fetch(remoteNames []string) {
 	}
 }
 
-func (r *repository) Update() error {
+func (r *repository) Update(testing TestingSelection) error {
 	selectedCommitId := ""
 
 	// We first walk on all Main branches in order to get a commit
@@ -175,6 +193,10 @@ func (r *repository) Update() error {
 		}
 	}
 
+	testingBase := r.RepositoryStatus.MainCommitId
+	if testing.Base != "" {
+		testingBase = testing.Base
+	}
 	for _, remote := range r.RepositoryStatus.Remotes {
 		// If an fetch error occured, we skip this remote
 		if remote.FetchErrorMsg != "" {
@@ -192,7 +214,7 @@ func (r *repository) Update() error {
 			*r,
 			remote.Name,
 			remote.Testing.Name,
-			r.RepositoryStatus.MainCommitId)
+			testingBase)
 		if err != nil {
 			remote.Testing.ErrorMsg = err.Error()
 			logrus.Debugf("Failed to getHeadFromRemoteAndBranch: %s", err)
@@ -203,9 +225,13 @@ func (r *repository) Update() error {
 
 		remote.Testing.CommitId = head.String()
 		remote.Testing.CommitMsg = msg
-		remote.Testing.OnTopOf = r.RepositoryStatus.MainCommitId
+		remote.Testing.OnTopOf = testingBase
 
-		if head.String() != selectedCommitId && head.String() != r.RepositoryStatus.MainCommitId {
+		if testing.Excluded[TestingHead{Remote: remote.Name, Branch: remote.Testing.Name, Commit: head.String()}] {
+			logrus.Debugf("The testing head %s of %s/%s is excluded", head, remote.Name, remote.Testing.Name)
+			continue
+		}
+		if head.String() != selectedCommitId && head.String() != testingBase {
 			selectedCommitId = head.String()
 			r.RepositoryStatus.SelectedCommitMsg = msg
 			r.RepositoryStatus.SelectedBranchName = remote.Testing.Name

@@ -18,7 +18,7 @@ func TestMarksPersistAcrossRestart(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, s.IsLeaseAware("d1"))
 	assert.NoError(t, s.MarkLeaseAware("d1"))
-	assert.NoError(t, s.MarkReleased("d1"))
+	assert.NoError(t, s.Release([]string{"d1"}, false))
 
 	// Simulate a restart: load a fresh State from the same file.
 	s2, err := Load(p)
@@ -83,7 +83,7 @@ func TestLoadTruncatedFileIsReported(t *testing.T) {
 	s, err := Load(p)
 	assert.NoError(t, err)
 	assert.NoError(t, s.MarkLeaseAware("d1"))
-	assert.NoError(t, s.MarkReleased("d1"))
+	assert.NoError(t, s.Release([]string{"d1"}, false))
 	content, err := os.ReadFile(p)
 	assert.NoError(t, err)
 
@@ -128,7 +128,7 @@ func TestCommitNeverExposesAPartialFile(t *testing.T) {
 		}
 	}()
 	for i := range 200 {
-		assert.NoError(t, s.MarkReleased(fmt.Sprintf("r%d", i)))
+		assert.NoError(t, s.Release([]string{fmt.Sprintf("r%d", i)}, false))
 	}
 	close(stop)
 	if got, ok := <-partial; ok {
@@ -141,7 +141,7 @@ func TestForgetDropsMarks(t *testing.T) {
 	s, err := Load(p)
 	assert.NoError(t, err)
 	assert.NoError(t, s.MarkLeaseAware("d1"))
-	assert.NoError(t, s.MarkReleased("d1"))
+	assert.NoError(t, s.Release([]string{"d1"}, false))
 	assert.NoError(t, s.MarkLeaseAware("d2"))
 	assert.NoError(t, s.Forget("d1"))
 

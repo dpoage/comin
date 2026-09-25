@@ -11,6 +11,7 @@ package leasestate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ type data struct {
 	ReleasedDeployments   map[string]bool `json:"released_deployments"`
 	DriftSince            *time.Time      `json:"drift_since"`
 	PendingSwitchLatest   bool            `json:"pending_switch_latest"`
+	MarksLostAt           *time.Time      `json:"marks_lost_at"`
 }
 
 // State is comin's own persisted state for the override-lease feature. All
@@ -42,9 +44,8 @@ type State struct {
 // State. A missing file yields an empty State and a nil error (nothing is
 // written until the first mutation). A file that exists but cannot be
 // read or parsed yields an empty State AND a non-nil error: the caller
-// must report it, because every lease-aware and released mark it held is
-// lost, so no testing deployment will be released until new marks are
-// recorded.
+// must report it. Every mark the file held is lost, so the State records
+// the moment of the loss (MarksLostAt) and writes it back at once.
 func Load(filename string) (*State, error) {
 	s := &State{
 		filename: filename,
@@ -59,23 +60,40 @@ func Load(filename string) (*State, error) {
 		return s, nil
 	}
 	if err != nil {
-		return s, fmt.Errorf("leasestate: cannot read %s, starting without lease-aware marks: %w", filename, err)
+		err = fmt.Errorf("leasestate: cannot read %s, starting without lease-aware marks: %w", filename, err)
+	} else {
+		var d data
+		if uerr := json.Unmarshal(content, &d); uerr != nil {
+			err = fmt.Errorf("leasestate: %s is corrupt (%d bytes), starting without lease-aware marks: %w", filename, len(content), uerr)
+		} else if d.Version != version {
+			err = fmt.Errorf("leasestate: %s has version %d, want %d; starting without lease-aware marks", filename, d.Version, version)
+		} else {
+			if d.LeaseAwareDeployments == nil {
+				d.LeaseAwareDeployments = map[string]bool{}
+			}
+			if d.ReleasedDeployments == nil {
+				d.ReleasedDeployments = map[string]bool{}
+			}
+			s.d = d
+			return s, nil
+		}
 	}
-	var d data
-	if err := json.Unmarshal(content, &d); err != nil {
-		return s, fmt.Errorf("leasestate: %s is corrupt (%d bytes), starting without lease-aware marks: %w", filename, len(content), err)
+	lost := time.Now().UTC()
+	s.d.MarksLostAt = &lost
+	return s, errors.Join(err, s.commit())
+}
+
+// MarksLostAt returns when the marks were last lost to an unreadable
+// state file, or nil if they never were. A deployment that ended before
+// that moment may have carried marks this State no longer has.
+func (s *State) MarksLostAt() *time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.d.MarksLostAt == nil {
+		return nil
 	}
-	if d.Version != version {
-		return s, fmt.Errorf("leasestate: %s has version %d, want %d; starting without lease-aware marks", filename, d.Version, version)
-	}
-	if d.LeaseAwareDeployments == nil {
-		d.LeaseAwareDeployments = map[string]bool{}
-	}
-	if d.ReleasedDeployments == nil {
-		d.ReleasedDeployments = map[string]bool{}
-	}
-	s.d = d
-	return s, nil
+	t := *s.d.MarksLostAt
+	return &t
 }
 
 // commit writes the current state to disk: a temporary file in the same
@@ -139,20 +157,24 @@ func (s *State) IsLeaseAware(uuid string) bool {
 	return s.d.LeaseAwareDeployments[uuid]
 }
 
-// MarkReleased records that uuid is a testing deployment whose override
-// ended: it is no longer "live" and must never again be treated as the
-// expected deployment.
-func (s *State) MarkReleased(uuid string) error {
+// Release records, in one write, that the deployments uuids belong to an
+// override that ended and must never again be treated as live, and, when
+// returning is true, that a switch-latest request is pending (the return
+// to the expected deployment). A crash therefore leaves either none of
+// this decision on disk or all of it.
+func (s *State) Release(uuids []string, returning bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.d.ReleasedDeployments[uuid] {
-		return nil
+	for _, uuid := range uuids {
+		s.d.ReleasedDeployments[uuid] = true
 	}
-	s.d.ReleasedDeployments[uuid] = true
+	if returning {
+		s.d.PendingSwitchLatest = true
+	}
 	return s.commit()
 }
 
-// IsReleased reports whether uuid was previously marked by MarkReleased.
+// IsReleased reports whether uuid was recorded by Release.
 func (s *State) IsReleased(uuid string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

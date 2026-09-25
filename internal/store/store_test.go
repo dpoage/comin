@@ -98,6 +98,34 @@ func TestDeploymentInsert(t *testing.T) {
 	assert.Equal(t, "3", evicted.Uuid)
 }
 
+// The manager inserts every finished deployment again. When the next
+// deployment already started, its row (appended by NewDeployment) is the
+// last one; a store at capacity must evict the finished deployment's own
+// row, not the one in flight, or the in-flight deployment's end is never
+// recorded. Mutant: evict the last row of the kind.
+func TestDeploymentInsertAtCapacityKeepsTheDeploymentInFlight(t *testing.T) {
+	bk := broker.New()
+	bk.Start()
+	s, _ := New(bk, "state.json", t.TempDir()+"/gcroots", 2, 2)
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "old", Operation: "switch", Status: StatusToString(Done)})
+	a := s.NewDeployment(&protobuf.Generation{}, "switch", "")
+	_, err := s.DeploymentStarted(a.Uuid)
+	assert.NoError(t, err)
+	a, err = s.DeploymentFinished(a.Uuid, nil, false, "")
+	assert.NoError(t, err)
+	b := s.NewDeployment(&protobuf.Generation{}, "switch", "")
+	_, err = s.DeploymentStarted(b.Uuid)
+	assert.NoError(t, err)
+
+	hasEvicted, evicted := s.DeploymentInsert(a)
+	assert.True(t, hasEvicted)
+	assert.Equal(t, a.Uuid, evicted.Uuid)
+
+	_, err = s.DeploymentFinished(b.Uuid, nil, false, "")
+	assert.NoError(t, err, "the deployment in flight is still in the store")
+	assert.Equal(t, []string{a.Uuid, "old", b.Uuid}, uuids(s.DeploymentList()))
+}
+
 func uuids(dpls []*protobuf.Deployment) []string {
 	ids := make([]string, len(dpls))
 	for i, d := range dpls {
