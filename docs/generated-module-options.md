@@ -379,12 +379,18 @@ a new testing-branch head, and ` comin status --json ` reports the
 drift; only ` comin deployment switch-latest ` deploys over it\. That
 covers an override ended without a reboot, a break-glass or
 closure activated out of band, and a rollback made by another
-tool\. Deployments resume by
-themselves once the running system is the last successful
-main-branch deployment again (after a reboot back to it, for
-example) or after an operator runs ` comin deployment         switch-latest `: comin then deploys the newest fetched main-branch
-commit, unless it is the one running, within one poll and one
-fetch, across a comin restart too\. A released testing-branch head
+tool\. Deployments resume by themselves once comin owns the system
+again: the running system is the last successful main-branch
+deployment again (after a reboot back to it, for example), or an
+operator runs ` comin deployment switch-latest `\. comin then deploys
+the newest fetched main-branch commit, unless it is the one
+running, within one poll and one fetch, across a comin restart too
+— except when a testing-branch head comin refused (fetched while a
+non-git lease was held, or while comin did not own the running
+system) descends from that main-branch commit: then the machine
+stays on its current main-branch deployment — ` comin status --json `
+reports no drift — until the main or the testing branch moves
+again\. A released testing-branch head
 is never selected for deployment, so it does not hold the main
 branch back while it is still the head of its branch, on the
 remote or only in comin’s clone\. If comin’s lease state file is
