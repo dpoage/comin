@@ -28,8 +28,16 @@ type repository struct {
 	gpgPubliKeys     []string
 }
 
+// TestingHead names the head of a testing branch.
+type TestingHead struct {
+	Remote string
+	Branch string
+	Commit string
+}
+
 type Repository interface {
-	FetchAndUpdate(ctx context.Context, remoteNames []string) (rsCh chan *pb.RepositoryStatus)
+	// FetchAndUpdate never selects a testing head in excluded.
+	FetchAndUpdate(ctx context.Context, remoteNames []string, excluded map[TestingHead]bool) (rsCh chan *pb.RepositoryStatus)
 	// GetRepositoryStatus is currently not thread safe and is only used to initialize the fetcher
 	GetRepositoryStatus() *pb.RepositoryStatus
 	// IsAncestor reports whether the commit base is the commit top or
@@ -88,12 +96,12 @@ func (r *repository) IsAncestor(base, top string) (bool, error) {
 	return isAncestor(repo, plumbing.NewHash(base), plumbing.NewHash(top))
 }
 
-func (r *repository) FetchAndUpdate(ctx context.Context, remoteNames []string) (rsCh chan *pb.RepositoryStatus) {
+func (r *repository) FetchAndUpdate(ctx context.Context, remoteNames []string, excluded map[TestingHead]bool) (rsCh chan *pb.RepositoryStatus) {
 	rsCh = make(chan *pb.RepositoryStatus)
 	go func() {
 		// FIXME: switch to the FetchContext to clean resource up on timeout
 		r.Fetch(remoteNames)
-		_ = r.Update()
+		_ = r.Update(excluded)
 		rsCh <- proto.CloneOf(r.RepositoryStatus)
 	}()
 	return rsCh
@@ -122,7 +130,9 @@ func (r *repository) Fetch(remoteNames []string) {
 	}
 }
 
-func (r *repository) Update() error {
+// Update selects the commit to deploy. A testing head in excluded is
+// never selected.
+func (r *repository) Update(excluded map[TestingHead]bool) error {
 	selectedCommitId := ""
 
 	// We first walk on all Main branches in order to get a commit
@@ -204,6 +214,11 @@ func (r *repository) Update() error {
 		remote.Testing.CommitId = head.String()
 		remote.Testing.CommitMsg = msg
 		remote.Testing.OnTopOf = r.RepositoryStatus.MainCommitId
+
+		if excluded[TestingHead{Remote: remote.Name, Branch: remote.Testing.Name, Commit: head.String()}] {
+			logrus.Debugf("The testing head %s of %s/%s is excluded", head, remote.Name, remote.Testing.Name)
+			continue
+		}
 
 		if head.String() != selectedCommitId && head.String() != r.RepositoryStatus.MainCommitId {
 			selectedCommitId = head.String()

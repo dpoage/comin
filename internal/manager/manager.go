@@ -83,7 +83,9 @@ type Manager struct {
 	// the executor. FetchAndBuild receives RepositoryStatusCh, which
 	// the fetcher sends on while holding its f.mu, so nothing reached
 	// from FetchAndBuild may take f.mu: the only fetcher method the
-	// deploy gate calls, IsAncestor, takes no fetcher lock. The
+	// deploy gate calls, IsAncestor, takes no fetcher lock. The fetcher
+	// calls excludedTestingHeads from its own goroutine with no fetcher
+	// lock held; it takes only the store's and leasestate's locks. The
 	// deployer's mutex is held only around non-blocking (select with
 	// default) channel sends, and the deployer calls the gate (its
 	// admission func) with it released.
@@ -127,6 +129,7 @@ func New(s *store.Store,
 		pollPeriod:              DefaultPollPeriod,
 	}
 	deployer.SetAdmission(m.admitQueued)
+	fetcher.SetExcludedTestingHeads(m.excludedTestingHeads)
 	// A switch-latest request made before a restart and never resolved
 	// is re-armed here, before the gRPC server can accept a new one, so
 	// a request arriving during startup is not deployed twice.

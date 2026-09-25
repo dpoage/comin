@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,10 +18,11 @@ import (
 
 // C3 (release without return) and the deploy gate's ownership rule,
 // through the real repository and fetcher. The testing branch is left on
-// the remote, as it is after any reboot, so the fetcher keeps selecting
-// the ended override's head, and a newer tier commit is selected, built
-// and offered like on a robot. Every fixture runs in-process and across a
-// comin restart.
+// the remote, as it is after any reboot: once the override is released the
+// repository no longer selects its head, so the next fetch selects the
+// main head again and a newer tier commit is selected, built and offered
+// like on a robot. Every fixture runs in-process and across a comin
+// restart.
 
 func (g *gitRemote) head(branch string) string {
 	ref, err := g.repo.Reference(plumbing.NewBranchReferenceName(branch), true)
@@ -149,8 +151,9 @@ func variants(t *testing.T, run func(t *testing.T, restart bool)) {
 
 // The operator ends the git lease (the file is removed, no switch-latest):
 // the testing deployments are released and the system is left on the
-// override. Mutants: the gate admits fetched main over a system comin does
-// not own; released marks in memory only.
+// override, though the next fetch selects m1 again. Mutants: the gate
+// admits fetched main over a system comin does not own; released marks in
+// memory only.
 func TestC3OperatorEndedLeaseDeploysNothing(t *testing.T) {
 	for _, n := range []int{1, 2} {
 		t.Run(fmt.Sprintf("%d testing deploys", n), func(t *testing.T) {
@@ -160,9 +163,9 @@ func TestC3OperatorEndedLeaseDeploysNothing(t *testing.T) {
 				r = r.endLease(t, restart)
 				if restart {
 					log = []string{}
-					r.fetch(t, fmt.Sprintf("t%d", n))
 				}
 				r.waitReleasedOnDisk(t)
+				r.fetch(t, "m1")
 				r.assertLeftAlone(t, "leaseless", log...)
 				assert.Equal(t, fmt.Sprintf("t%d", n), r.current())
 			})
@@ -171,7 +174,8 @@ func TestC3OperatorEndedLeaseDeploysNothing(t *testing.T) {
 }
 
 // Same, then the operator's switch-latest: exactly one deployment, to m1,
-// then S4 none, and a newer tier commit deploys normally.
+// then S4 none, and a newer tier commit deploys normally. Mutant: the gate
+// deploys a main commit that is already running.
 func TestC3OperatorEndedLeaseThenSwitchLatest(t *testing.T) {
 	for _, n := range []int{1, 2} {
 		t.Run(fmt.Sprintf("%d testing deploys", n), func(t *testing.T) {
@@ -181,9 +185,9 @@ func TestC3OperatorEndedLeaseThenSwitchLatest(t *testing.T) {
 				r = r.endLease(t, restart)
 				if restart {
 					log = []string{}
-					r.fetch(t, fmt.Sprintf("t%d", n))
 				}
 				r.waitReleasedOnDisk(t)
+				r.fetch(t, "m1")
 				r.waitDrift(t, "leaseless")
 
 				require.NoError(t, r.m.SwitchDeploymentLatest())
@@ -203,7 +207,9 @@ func TestC3OperatorEndedLeaseThenSwitchLatest(t *testing.T) {
 }
 
 // The lease ends by reboot: the machine runs m1 again, so comin owns it,
-// deploys nothing for the override, and a newer tier commit deploys.
+// deploys nothing for the override (m1, selected again, is already
+// running), and a newer tier commit deploys. Mutant: the gate deploys a
+// main commit that is already running.
 func TestC3RebootEndedLeaseDeploysNothingThenTierResumes(t *testing.T) {
 	for _, n := range []int{1, 2} {
 		t.Run(fmt.Sprintf("%d testing deploys", n), func(t *testing.T) {
@@ -214,9 +220,9 @@ func TestC3RebootEndedLeaseDeploysNothingThenTierResumes(t *testing.T) {
 				r = r.endLease(t, restart)
 				if restart {
 					log = []string{}
-					r.fetch(t, fmt.Sprintf("t%d", n))
 				}
 				r.waitReleasedOnDisk(t)
+				r.fetch(t, "m1")
 				r.waitDrift(t, "none")
 				r.waitDeploys(t, log...)
 
@@ -243,9 +249,9 @@ func TestC3BreakGlassDuringGitLeaseDeploysNothing(t *testing.T) {
 				r = r.endLease(t, restart)
 				if restart {
 					log = []string{}
-					r.fetch(t, fmt.Sprintf("t%d", n))
 				}
 				r.waitReleasedOnDisk(t)
+				r.fetch(t, "m1")
 				r.assertLeftAlone(t, "leaseless", log...)
 				assert.Equal(t, "/nix/store/break-glass", r.exec.get())
 			})
@@ -265,7 +271,6 @@ func TestC3RebootEndedLeaseThenOutOfBandChangeDeploysNothing(t *testing.T) {
 			r.exec.set("/nix/store/out-of-band")
 			r = r.restart(t)
 			log = []string{}
-			r.fetch(t, "t1")
 		} else {
 			r.exec.set("/nix/store/" + r.remote.head("main"))
 			r = r.endLease(t, false)
@@ -274,6 +279,7 @@ func TestC3RebootEndedLeaseThenOutOfBandChangeDeploysNothing(t *testing.T) {
 			r.exec.set("/nix/store/out-of-band")
 		}
 		r.waitReleasedOnDisk(t)
+		r.fetch(t, "m1")
 		r.assertLeftAlone(t, "leaseless", log...)
 	})
 }
@@ -400,5 +406,138 @@ func TestNullLeaseFileDeploysAsBe6025e(t *testing.T) {
 	assert.False(t, r2.ls.PendingSwitchLatest())
 	for _, d := range r2.s.DeploymentList() {
 		assert.False(t, r2.ls.IsReleased(d.Uuid))
+	}
+}
+
+// ---------------------------------------------------------------------
+// The tier after an override: a released testing head never shadows it
+// ---------------------------------------------------------------------
+
+func (g *gitRemote) hash(name string) string {
+	for h, n := range g.names {
+		if n == name {
+			return h
+		}
+	}
+	g.t.Fatalf("no commit named %s", name)
+	return ""
+}
+
+// tierShadowingOverride starts an override whose testing head descends
+// from the newer tier commit m2, so the repository prefers that head to m2
+// for as long as it is the branch head and not excluded. It returns the
+// rig and its deploy log. Shapes:
+//   - rebuilt: m1, then t1 under the git lease; main moves to m2, fetched
+//     alone and deferred; the testing branch is rebuilt on m2 as t2.
+//   - one fetch: m1, then t1 under the git lease; m2 and t2 built on it
+//     arrive in one fetch, so m2 never reaches the deploy gate.
+//   - lagging: the robot runs m1 with no lease; m2 and t1 built on it
+//     arrive in one fetch; t1 deploys and the hook takes the lease.
+func tierShadowingOverride(t *testing.T, dir, shape string) (*gitRig, []string) {
+	t.Helper()
+	if shape == "lagging" {
+		remote := newGitRemote(t)
+		m1 := remote.commit("", "m1")
+		remote.setBranch("main", m1)
+		r := newGitRig(t, dir, remote)
+		r.start(t)
+		r.fetch(t, "m1")
+		r.waitDeploys(t, "m1/switch")
+		m2 := remote.commit(m1, "m2")
+		remote.setBranch("main", m2)
+		remote.setBranch("testing-r1", remote.commit(m2, "t1"))
+		r.fetch(t, "t1")
+		log := []string{"m1/switch", "t1/test"}
+		r.waitDeploys(t, log...)
+		require.True(t, r.leaseExists(), "the hook took a git lease")
+		return r, log
+	}
+	r := startGitOverride(t, dir, 1)
+	m2 := r.remote.commit(r.remote.head("main"), "m2")
+	r.remote.setBranch("main", m2)
+	if shape == "rebuilt" {
+		r.fetch(t, "m2")
+		r.waitMainDecided(t, m2)
+	}
+	r.remote.setBranch("testing-r1", r.remote.commit(m2, "t2"))
+	r.fetch(t, "t2")
+	log := []string{"m1/switch", "t1/test", "t2/test"}
+	r.waitDeploys(t, log...)
+	return r, log
+}
+
+// B-1 and A-d (rebuilt), B-3 (rebuilt, the remote testing branch deleted;
+// comin's clone keeps it), and the other shapes: the lease ends by reboot,
+// back on m1, so comin owns the system. After C3's release, one fetch
+// selects m2 and it deploys, exactly once. Mutants: the repository's
+// testing selection does not exclude released heads; the gate deploys a
+// main commit that is already running (in-process, the deferred m2 and
+// the fetched m2 both deploy).
+func TestTierDeploysAfterRebootEndedOverride(t *testing.T) {
+	for _, c := range []struct {
+		shape        string
+		deleteBranch bool
+	}{{"rebuilt", false}, {"rebuilt", true}, {"one fetch", false}, {"lagging", false}} {
+		t.Run(fmt.Sprintf("%s/branch deleted=%v", c.shape, c.deleteBranch), func(t *testing.T) {
+			variants(t, func(t *testing.T, restart bool) {
+				r, log := tierShadowingOverride(t, t.TempDir(), c.shape)
+				if c.deleteBranch {
+					r.remote.deleteBranch("testing-r1")
+				}
+				r.exec.set("/nix/store/" + r.remote.hash("m1"))
+				r = r.endLease(t, restart)
+				if restart {
+					log = []string{}
+				}
+				r.waitReleasedOnDisk(t)
+				r.fetch(t, "m2")
+				r.waitDeploys(t, append(log, "m2/switch")...)
+				r.waitDrift(t, "none")
+				assert.Equal(t, "m2", r.current())
+			})
+		})
+	}
+}
+
+// B-2 and A-a (rebuilt), A-b (one fetch), A-c (lagging): the operator
+// ends the lease with the override running. After C3's release one fetch
+// selects m2, which is deferred: comin does not own the system. The
+// operator's switch-latest deploys m1, the S4 expected, then comin owns the
+// system and m2 follows. comin restarts never, while the lease is held
+// (the deferred m2 is lost), or when the lease ends. Mutant: the
+// repository's testing selection does not exclude released heads.
+func TestTierDeploysAfterOperatorEndedOverrideAndSwitchLatest(t *testing.T) {
+	for _, shape := range []string{"rebuilt", "one fetch", "lagging"} {
+		for _, restart := range []string{"never", "during the lease", "at the end"} {
+			t.Run(shape+"/restart "+restart, func(t *testing.T) {
+				r, log := tierShadowingOverride(t, t.TempDir(), shape)
+				head, _, _ := strings.Cut(log[len(log)-1], "/")
+				if restart == "during the lease" {
+					r = r.restart(t)
+					log = []string{}
+					r.fetch(t, head)
+					r.waitDeploys(t)
+				}
+				r = r.endLease(t, restart == "at the end")
+				if restart == "at the end" {
+					log = []string{}
+				}
+				r.waitReleasedOnDisk(t)
+				m2 := r.remote.hash("m2")
+				r.fetch(t, "m2")
+				r.waitMainDecided(t, m2)
+				for range 3 {
+					r.m.poll(time.Now().UTC())
+				}
+				r.waitDeploys(t, log...)
+				r.waitDrift(t, "leaseless")
+				assert.Equal(t, head, r.current())
+
+				require.NoError(t, r.m.SwitchDeploymentLatest())
+				r.waitDeploys(t, append(log, "m1/switch", "m2/switch")...)
+				r.waitDrift(t, "none")
+				assert.Equal(t, "m2", r.current())
+			})
+		}
 	}
 }

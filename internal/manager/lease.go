@@ -4,10 +4,10 @@ package manager
 // gate (C1 tier freeze, C2 kind gate and descent check, released heads, and
 // the rule that comin only deploys over a system it owns), applied when a
 // generation is confirmed and again when the deployer is about to start
-// it; the tier generation the gate defers; releasing the testing
-// deployments of an ended override (C3), which never deploys anything; and
-// the S4 drift status (C5), which shares its "expected deployment" query
-// with the gate.
+// it; the tier generation the gate defers; the testing heads the fetcher
+// must not select (released heads); releasing the testing deployments of
+// an ended override (C3), which never deploys anything; and the S4 drift
+// status (C5), which shares its "expected deployment" query with the gate.
 
 import (
 	"slices"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/nlewo/comin/internal/lease"
 	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/store"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -119,12 +120,27 @@ func (m *Manager) releasePending(obs lease.Observation) bool {
 	if obs.Exists {
 		return false
 	}
-	for _, d := range m.storage.DeploymentList() {
-		if isTestingDeployment(d) && m.leaseState.IsLeaseAware(d.Uuid) && !m.leaseState.IsReleased(d.Uuid) {
-			return true
-		}
+	return slices.ContainsFunc(m.storage.DeploymentList(), m.unreleasedLeaseAware)
+}
+
+// unreleasedLeaseAware reports whether d is a testing deployment made
+// while the lease reader was enabled that C3 has not released yet.
+func (m *Manager) unreleasedLeaseAware(d *protobuf.Deployment) bool {
+	return isTestingDeployment(d) && m.leaseState.IsLeaseAware(d.Uuid) && !m.leaseState.IsReleased(d.Uuid)
+}
+
+// alreadyRunning reports whether the main generation g is the commit of
+// the S4 expected deployment and /run/current-system is that deployment's
+// system. Once an override is released the repository selects the
+// expected main commit again; deploying it would activate the running
+// system a second time.
+func (m *Manager) alreadyRunning(g *protobuf.Generation, obs lease.Observation) bool {
+	expected := m.expectedDeployment(m.storage.DeploymentList(), obs.IsGit())
+	if expected == nil || expected.Generation.GetSelectedCommitId() != g.GetSelectedCommitId() {
+		return false
 	}
-	return false
+	current, err := m.executor.CurrentSystem()
+	return err == nil && current == expected.Generation.GetOutPath()
 }
 
 // leaseDeployDecision is the deploy gate. It runs when a built generation
@@ -145,6 +161,8 @@ func (m *Manager) releasePending(obs lease.Observation) bool {
 //   - A testing head that is the commit of a released deployment of the
 //     same branch never deploys again.
 //   - Nothing deploys over a system comin does not own (ownsRunningSystem).
+//   - A main generation that is already running as the expected
+//     deployment is dropped, not deferred (alreadyRunning).
 //
 // switch-latest requests never pass through it.
 func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string, ok bool) {
@@ -168,6 +186,11 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 		if owned, reason := m.ownsRunningSystem(obs); !owned {
 			logrus.Infof("manager: deferring the main generation %s: %s", g.Uuid, reason)
 			m.setDeferred(g)
+			return operation, false
+		}
+		if m.alreadyRunning(g, obs) {
+			logrus.Infof("manager: skipping the main generation %s: its commit %s is already running", g.Uuid, g.SelectedCommitId)
+			m.setDeferred(nil)
 			return operation, false
 		}
 		m.setDeferred(nil)
@@ -223,13 +246,8 @@ func (m *Manager) descendsFrom(g *protobuf.Generation, held string) bool {
 	return ok
 }
 
-// testingHeadKey names the head of a testing branch.
-type testingHeadKey struct {
-	remote, branch, commit string
-}
-
-func testingHead(g *protobuf.Generation) testingHeadKey {
-	return testingHeadKey{remote: g.GetSelectedRemoteName(), branch: g.GetSelectedBranchName(), commit: g.GetSelectedCommitId()}
+func testingHead(g *protobuf.Generation) repository.TestingHead {
+	return repository.TestingHead{Remote: g.GetSelectedRemoteName(), Branch: g.GetSelectedBranchName(), Commit: g.GetSelectedCommitId()}
 }
 
 // endedOverride reports whether d is a testing deployment of an ended
@@ -247,18 +265,31 @@ func (m *Manager) endedOverride(d *protobuf.Deployment) bool {
 }
 
 // releasedHeads returns the heads of ended overrides, per remote and
-// branch. The fetcher keeps selecting such a head while it is still the
-// branch head, re-emits it after a restart, and a remote branch deleted
-// at override end stays in comin's local repository, so without this an
-// ended override would come back.
-func (m *Manager) releasedHeads(deployments []*protobuf.Deployment) map[testingHeadKey]bool {
-	heads := map[testingHeadKey]bool{}
+// branch. The repository never selects them (excludedTestingHeads) and
+// the gate refuses them: the branch head stays on the remote after the
+// override, and a remote branch deleted at override end stays in comin's
+// local repository, so without this an ended override would come back.
+func (m *Manager) releasedHeads(deployments []*protobuf.Deployment) map[repository.TestingHead]bool {
+	heads := map[repository.TestingHead]bool{}
 	for _, d := range deployments {
 		if m.endedOverride(d) {
 			heads[testingHead(d.Generation)] = true
 		}
 	}
 	return heads
+}
+
+// excludedTestingHeads is the fetcher's exclusion set, asked at the start
+// of every fetch: the heads of ended overrides, from comin's persisted
+// marks. Once an override is released its head no longer shadows the
+// fetched main head, which is selected and reaches the deploy gate; the
+// gate deploys it only over a system comin owns. With the lease reader
+// disabled nothing is excluded: the selection is be6025e's.
+func (m *Manager) excludedTestingHeads() map[repository.TestingHead]bool {
+	if !m.leaseReader.Enabled() {
+		return nil
+	}
+	return m.releasedHeads(m.storage.DeploymentList())
 }
 
 func (m *Manager) setDeferred(g *protobuf.Generation) {
@@ -319,7 +350,7 @@ func (m *Manager) releaseEndedOverrides() {
 	// The store can hold several rows of one deployment.
 	var release []string
 	for _, d := range m.storage.DeploymentList() {
-		if isTestingDeployment(d) && m.leaseState.IsLeaseAware(d.Uuid) && !m.leaseState.IsReleased(d.Uuid) && !slices.Contains(release, d.Uuid) {
+		if m.unreleasedLeaseAware(d) && !slices.Contains(release, d.Uuid) {
 			release = append(release, d.Uuid)
 		}
 	}

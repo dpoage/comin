@@ -214,8 +214,9 @@ func TestC2GitLeaseTestingNotDescendingFromHeldRefused(t *testing.T) {
 // R4's order: the developer's testing branch is deleted on the remote,
 // then the lease ends and the operator switches back. comin's clone keeps
 // the deleted branch (fetch does not prune), so after a restart the
-// fetcher selects the released head again: it is not deployed. The next
-// tier commit is. Mutant: no released check in the deploy gate.
+// released head is still its branch head: the repository does not select
+// it, and the next tier commit deploys. Mutant: the repository's testing
+// selection does not exclude released heads.
 func TestC3ReleasedHeadOfDeletedBranchNotRedeployedAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	remote := newGitRemote(t)
@@ -236,12 +237,13 @@ func TestC3ReleasedHeadOfDeletedBranchNotRedeployedAfterRestart(t *testing.T) {
 	r1.waitDrift(t, "leaseless")
 	require.NoError(t, r1.m.SwitchDeploymentLatest())
 	r1.waitDeploys(t, "m1/switch", "t1/test", "m1/switch")
+	r1.waitReleasedOnDisk(t)
 	r1.stop()
 
 	r2 := newGitRig(t, dir, remote)
 	r2.exec.set("/nix/store/" + m1)
 	r2.start(t)
-	r2.fetch(t, "t1")
+	r2.fetch(t, "m1")
 	m2 := remote.commit(m1, "m2")
 	remote.setBranch("main", m2)
 	r2.fetch(t, "m2")

@@ -382,9 +382,15 @@ closure activated out of band, and a rollback made by another
 tool\. Deployments resume by
 themselves once the running system is the last successful
 main-branch deployment again (after a reboot back to it, for
-example) or after an operator runs ` comin deployment         switch-latest `; the main-branch commit held back meanwhile is
-then deployed\. If comin’s lease state file is unreadable, every
-testing deployment made before counts as released\. ` null `
+example) or after an operator runs ` comin deployment         switch-latest `: comin then deploys the newest fetched main-branch
+commit, unless it is the one running, within one poll and one
+fetch, across a comin restart too\. A released testing-branch head
+is never selected for deployment, so it does not hold the main
+branch back while it is still the head of its branch, on the
+remote or only in comin’s clone\. If comin’s lease state file is
+unreadable, comin never deploys the testing-branch head of a
+testing deployment made before again, and once no lease is held
+each such deployment counts as released\. ` null `
 disables only these lease behaviours\. Whatever this option is set
 to, ` comin status --json ` reports ` drift `, the post-deployment
 command gets ` COMIN_OPERATION `, and ` comin deployment         switch-latest ` deploys the last successful main-branch deployment
