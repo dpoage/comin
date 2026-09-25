@@ -268,12 +268,14 @@ in {
         operator runs `comin deployment switch-latest`. comin then deploys
         the newest fetched main-branch commit, unless it is the one
         running, within one poll and one fetch, across a comin restart too
-        — except when a testing-branch head comin refused (fetched while a
-        non-git lease was held, or while comin did not own the running
-        system) descends from that main-branch commit: then the machine
-        stays on its current main-branch deployment — `comin status --json`
-        reports no drift — until the main or the testing branch moves
-        again. A released testing-branch head
+        — except when a testing-branch head comin refused (for example,
+        fetched while a non-git lease was held or while comin did not own
+        the running system) descends from that main-branch commit: then
+        the machine stays on its current main-branch deployment — `comin
+        status --json` reports no drift — until the main or the testing
+        branch moves again, or until comin restarts (a reboot included)
+        while it owns the system, which then deploys that testing-branch
+        head with test. A released testing-branch head
         is never selected for deployment, so it does not hold the main
         branch back while it is still the head of its branch, on the
         remote or only in comin's clone. If comin's lease state file is
