@@ -219,7 +219,7 @@ func waitFor(t *testing.T, cond func() bool, msgAndArgs ...any) {
 
 // processed reports whether the manager loop has handled the deployer's
 // current deployment: it is the latest store entry, and a testing one is
-// marked lease-aware.
+// marked lease-aware (when the lease reader is enabled).
 func (r *rig) processed() bool {
 	cur := r.d.Deployment()
 	if cur == nil {
@@ -229,7 +229,7 @@ func (r *rig) processed() bool {
 	if !ok || last.Uuid != cur.Uuid {
 		return false
 	}
-	return !isTestingDeployment(cur) || r.ls.IsLeaseAware(cur.Uuid)
+	return !isTestingDeployment(cur) || !r.m.leaseReader.Enabled() || r.ls.IsLeaseAware(cur.Uuid)
 }
 
 // waitDeploys waits until the deploy log is exactly want, nothing is
@@ -286,166 +286,15 @@ func (r *rig) overrideOn(t *testing.T, n int) {
 }
 
 // ---------------------------------------------------------------------
-// C3: the return is not filtered by IsAlreadyDeployed
+// C3: nothing deploys before an ended override's release is recorded
 // ---------------------------------------------------------------------
 
-// One testing deploy, then the operator ends the lease. The deployer's
-// previous deployment is M, so a return through Submit would be skipped
-// as "already deployed". Mutant: return via plain Submit.
-func TestC3SingleTestingDeployOperatorEndReturnsOnce(t *testing.T) {
-	r := newRig(t, t.TempDir())
-	r.start(t)
-	r.overrideOn(t, 1)
-
-	require.NoError(t, os.Remove(r.lease))
-	r.waitDeploys(t, "m1/switch", "t1/test", "m1/switch")
-	r.waitDrift(t, "none")
-	assert.Equal(t, "/nix/store/m1", r.exec.get())
-}
-
-// Same, with M deployed by an earlier comin process: the restarted
-// deployer starts with M as both its current and previous deployment.
-func TestC3SingleTestingDeployAfterRestartReturnsOnce(t *testing.T) {
-	dir := t.TempDir()
-	r1 := newRig(t, dir)
-	r1.start(t)
-	r1.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
-	r1.waitDeploys(t, "m1/switch")
-	r1.stop()
-
-	r2 := newRig(t, dir)
-	r2.exec.set("/nix/store/m1")
-	r2.start(t)
-	assert.Equal(t, "submitted:test", r2.fetchDeploy(testingGeneration("t1", "m1")))
-	r2.waitDeploys(t, "t1/test")
-	require.True(t, r2.leaseExists())
-
-	require.NoError(t, os.Remove(r2.lease))
-	r2.waitDeploys(t, "t1/test", "m1/switch")
-	r2.waitDrift(t, "none")
-	assert.Equal(t, "/nix/store/m1", r2.exec.get())
-}
-
-// ---------------------------------------------------------------------
-// P-C3-ONCE: one return decision per ended override
-// ---------------------------------------------------------------------
-
-// A git lease ends by reboot: the machine boots M, the lease is gone, and
-// comin restarts. C3 decides once (nothing to return). A later
-// out-of-band change is leaseless drift, never reverted, including after
-// another restart. Mutant: no consumed check.
-func TestC3OnceRebootEndedLeaseThenOutOfBandChange(t *testing.T) {
-	for _, n := range []int{1, 2} {
-		t.Run(fmt.Sprintf("%d testing deploys", n), func(t *testing.T) {
-			dir := t.TempDir()
-			r1 := newRig(t, dir)
-			r1.start(t)
-			r1.overrideOn(t, n)
-			r1.stop()
-			require.NoError(t, os.Remove(r1.lease))
-
-			r2 := newRig(t, dir)
-			r2.exec.set("/nix/store/m1")
-			r2.start(t)
-			last := r2.d.Deployment()
-			waitFor(t, func() bool { return r2.ls.IsReleased(last.Uuid) }, "C3 decided")
-			r2.waitDrift(t, "none")
-
-			r2.exec.set("/nix/store/break-glass")
-			r2.waitDrift(t, "leaseless")
-			assert.Empty(t, r2.deployLog())
-			r2.stop()
-
-			r3 := newRig(t, dir)
-			r3.exec.set("/nix/store/break-glass")
-			r3.start(t)
-			r3.waitDrift(t, "leaseless")
-			assert.Empty(t, r3.deployLog())
-		})
-	}
-}
-
-// A git lease ends by reboot, later a closure override is applied out of
-// band and ends. Whether to return a closure is the lease tool's
-// decision (it calls switch-latest), never C3's. Mutant: no consumed
-// check.
-func TestC3OnceClosureLeaseAfterRebootEndedGitLease(t *testing.T) {
-	dir := t.TempDir()
-	r1 := newRig(t, dir)
-	r1.start(t)
-	r1.overrideOn(t, 1)
-	r1.stop()
-	require.NoError(t, os.Remove(r1.lease))
-
-	r2 := newRig(t, dir)
-	r2.exec.set("/nix/store/m1")
-	r2.start(t)
-	last := r2.d.Deployment()
-	waitFor(t, func() bool { return r2.ls.IsReleased(last.Uuid) }, "C3 decided")
-	r2.waitDrift(t, "none")
-
-	r2.writeLease(t, "closure")
-	r2.exec.set("/nix/store/closure-c")
-	r2.waitDrift(t, "held")
-	require.NoError(t, os.Remove(r2.lease))
-	r2.waitDrift(t, "leaseless")
-	assert.Empty(t, r2.deployLog())
-	assert.Equal(t, "/nix/store/closure-c", r2.exec.get())
-}
-
-// comin restarts after C3 released the override but before the return
-// deployed: the decision is on disk, so the restarted comin returns
-// exactly once. Mutant: the return is not recorded with the release.
-func TestC3DecisionSurvivesRestartBeforeReturn(t *testing.T) {
-	dir := t.TempDir()
-	r1 := newRig(t, dir)
-	r1.start(t)
-	r1.overrideOn(t, 1)
-	x := r1.d.Deployment()
-
-	// The deployer takes nothing more, so the return stays queued.
-	r1.d.Suspend()
-	require.NoError(t, os.Remove(r1.lease))
-	waitFor(t, func() bool {
-		onDisk, err := leasestate.Load(r1.lsPath)
-		return err == nil && onDisk.IsReleased(x.Uuid)
-	}, "C3 decided")
-	r1.stop()
-	require.Equal(t, []string{"m1/switch", "t1/test"}, r1.deployLog())
-
-	r2 := newRig(t, dir)
-	r2.exec.set("/nix/store/t1")
-	r2.start(t)
-	r2.waitDeploys(t, "m1/switch")
-	r2.waitDrift(t, "none")
-	assert.False(t, r2.ls.PendingSwitchLatest())
-}
-
-// Ruling 1: a system changed out of band while the git lease was held is
-// not comin's; when the lease ends C3 records its decision without a
-// return. Mutant: no guard.
-func TestC3BreakGlassDuringGitLeaseIsNotReturned(t *testing.T) {
-	r := newRig(t, t.TempDir())
-	r.start(t)
-	r.overrideOn(t, 1)
-	x := r.d.Deployment()
-
-	r.exec.set("/nix/store/break-glass")
-	require.NoError(t, os.Remove(r.lease))
-	r.waitDrift(t, "leaseless")
-	assert.True(t, r.ls.IsReleased(x.Uuid))
-	assert.Equal(t, []string{"m1/switch", "t1/test"}, r.deployLog())
-	assert.Equal(t, "/nix/store/break-glass", r.exec.get())
-}
-
-// A tier commit fetched after the override ended but before C3 decided
-// is deferred, not deployed ahead of the return: deploying it first would
-// leave the override unreleased and its testing head selectable again.
-// With an hour-long poll period, only the poll the manager runs after
-// each deployment and the test's own poll run C3. Once the return has
-// finished, the deferred commit is offered. Mutant: the gate admits main
-// generations as soon as the lease file is gone.
-func TestMainFetchedBeforeC3DecidesIsDeferred(t *testing.T) {
+// The override ended by reboot (the machine runs m1 again, so comin owns
+// it) and C3 has not recorded the release yet. The ended override's head,
+// re-emitted by the fetcher, must not deploy, and a tier commit waits for
+// the release. With an hour-long poll period only the test's poll runs
+// C3. Mutant: no pending-release rule in the gate.
+func TestEndedOverrideRefusedUntilReleaseRecorded(t *testing.T) {
 	r := newRig(t, t.TempDir())
 	r.m.SetPollPeriod(time.Hour)
 	r.start(t)
@@ -456,10 +305,12 @@ func TestMainFetchedBeforeC3DecidesIsDeferred(t *testing.T) {
 	waitFor(t, func() bool { return r.ls.DriftSince() != nil }, "the post-deployment poll ran")
 
 	require.NoError(t, os.Remove(r.lease))
+	r.exec.set("/nix/store/m1")
+	assert.Equal(t, "skipped:lease-decision", r.fetchDeploy(rebuilt(testingGeneration("t1", "m1"))))
 	assert.Equal(t, "skipped:lease-decision", r.fetchDeploy(mainGeneration("m2", "/nix/store/m2")))
 	assert.False(t, r.ls.IsReleased(x.Uuid))
 	r.m.poll(time.Now().UTC())
-	r.waitDeploys(t, "m1/switch", "t1/test", "m1/switch", "m2/switch")
+	r.waitDeploys(t, "m1/switch", "t1/test", "m2/switch")
 	assert.True(t, r.ls.IsReleased(x.Uuid))
 }
 
@@ -467,15 +318,19 @@ func TestMainFetchedBeforeC3DecidesIsDeferred(t *testing.T) {
 // C3: a released head is never redeployed
 // ---------------------------------------------------------------------
 
-// Return, restart, the fetcher re-emits the released head (its selected
-// commit starts empty after a restart). Mutant: no released check in the
-// deploy gate.
+// The override ended, the operator switched back, comin restarted, and the
+// fetcher re-emits the released head (its selected commit starts empty
+// after a restart), which is not the deployer's previous deployment.
+// Mutant: no released check in the deploy gate.
 func TestC3ReleasedHeadNotRedeployedAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	r1 := newRig(t, dir)
 	r1.start(t)
 	r1.overrideOn(t, 2)
+	x := r1.d.Deployment()
 	require.NoError(t, os.Remove(r1.lease))
+	waitFor(t, func() bool { return r1.ls.IsReleased(x.Uuid) }, "C3 released the override")
+	require.NoError(t, r1.m.SwitchDeploymentLatest())
 	r1.waitDeploys(t, "m1/switch", "t1/test", "t2/test", "m1/switch")
 	r1.stop()
 
@@ -493,21 +348,23 @@ func TestC3ReleasedHeadNotRedeployedAfterRestart(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C1: a tier commit frozen by the lease deploys once the lease ends
+// C1: a tier commit frozen by the lease deploys once comin owns the system
 // ---------------------------------------------------------------------
 
-// Mutant: drop the frozen generation instead of deferring it.
+// The lease ends with the machine back on m1 (a reboot ends a git lease;
+// a session lease never moves the system): the frozen tier commit is
+// offered once. Mutant: drop the frozen generation instead of deferring
+// it.
 func TestC1FrozenTierCommitDeploysAfterLeaseEnds(t *testing.T) {
-	t.Run("git override", func(t *testing.T) {
+	t.Run("git override ended by reboot", func(t *testing.T) {
 		r := newRig(t, t.TempDir())
 		r.start(t)
 		r.overrideOn(t, 1)
 		assert.Equal(t, "skipped:lease-decision", r.fetchDeploy(mainGeneration("m2", "/nix/store/m2")))
 
+		r.exec.set("/nix/store/m1")
 		require.NoError(t, os.Remove(r.lease))
-		// The C3 return to the expected generation, then the frozen
-		// tier commit, offered once.
-		r.waitDeploys(t, "m1/switch", "t1/test", "m1/switch", "m2/switch")
+		r.waitDeploys(t, "m1/switch", "t1/test", "m2/switch")
 		r.waitDrift(t, "none")
 		assert.Equal(t, "/nix/store/m2", r.exec.get())
 	})
@@ -603,53 +460,62 @@ func TestC7SwitchLatestRequestedWhileNewerDeployRunning(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C3: a failed current testing deployment still returns
+// The gate: a failed activation leaves comin's own system running
 // ---------------------------------------------------------------------
 
-// t1 done, the extend t2 fails activation (current system already
-// repointed), the operator ends the lease. Mutant: C3 only for a Done
-// current deployment.
-func TestC3ReturnsWhenCurrentTestingDeployFailed(t *testing.T) {
-	r := newRig(t, t.TempDir())
-	r.start(t)
-	r.overrideOn(t, 1)
-	r.failDeploysOf("/nix/store/t2")
-	r.fetchDeploy(testingGeneration("t2", "m1"))
-	r.waitDeploys(t, "m1/switch", "t1/test", "t2/test")
-	require.Equal(t, store.StatusToString(store.Failed), r.d.Deployment().Status)
+// A failed activation that repointed the current system leaves a system
+// comin deployed: comin still owns it. Under a git lease the next extend
+// deploys; with no lease the next tier commit does (as on be6025e). Once
+// the override ends, its failed testing deployment is released like the
+// others and nothing deploys over it. Mutant: comin owns only the S4
+// expected system.
+func TestFailedDeployLeavesTheSystemComins(t *testing.T) {
+	t.Run("extend after a failed extend under a git lease", func(t *testing.T) {
+		r := newRig(t, t.TempDir())
+		r.start(t)
+		r.overrideOn(t, 1)
+		r.failDeploysOf("/nix/store/t2")
+		r.fetchDeploy(testingGeneration("t2", "m1"))
+		r.waitDeploys(t, "m1/switch", "t1/test", "t2/test")
+		require.Equal(t, store.StatusToString(store.Failed), r.d.Deployment().Status)
+		assert.Equal(t, "submitted:test", r.fetchDeploy(testingGeneration("t3", "m1")))
+		r.waitDeploys(t, "m1/switch", "t1/test", "t2/test", "t3/test")
 
-	states := map[string]bool{}
-	var statesMu sync.Mutex
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				s := r.drift().State
-				statesMu.Lock()
-				states[s] = true
-				statesMu.Unlock()
+		r.failDeploysOf("/nix/store/t4")
+		r.fetchDeploy(testingGeneration("t4", "m1"))
+		want := []string{"m1/switch", "t1/test", "t2/test", "t3/test", "t4/test"}
+		r.waitDeploys(t, want...)
+		require.NoError(t, os.Remove(r.lease))
+		r.waitDrift(t, "leaseless")
+		waitFor(t, func() bool {
+			for _, d := range r.s.DeploymentList() {
+				if isTestingDeployment(d) && !r.ls.IsReleased(d.Uuid) {
+					return false
+				}
 			}
-		}
-	}()
-	require.NoError(t, os.Remove(r.lease))
-	r.waitDeploys(t, "m1/switch", "t1/test", "t2/test", "m1/switch")
-	r.waitDrift(t, "none")
-	close(stop)
-	<-done
+			return true
+		}, "every testing deployment, the failed ones included, is released")
+		assert.Equal(t, "skipped:lease-decision", r.fetchDeploy(mainGeneration("m2", "/nix/store/m2")))
+		assert.Equal(t, "skipped:lease-decision", r.fetchDeploy(testingGeneration("t5", "m1")))
+		r.m.poll(time.Now().UTC())
+		r.waitDeploys(t, want...)
+		assert.Equal(t, "/nix/store/t4", r.exec.get())
+	})
+	t.Run("tier commit after a failed tier deploy", func(t *testing.T) {
+		r := newRig(t, t.TempDir())
+		r.start(t)
+		r.fetchDeploy(mainGeneration("m1", "/nix/store/m1"))
+		r.waitDeploys(t, "m1/switch")
+		r.failDeploysOf("/nix/store/m2")
+		r.fetchDeploy(mainGeneration("m2", "/nix/store/m2"))
+		r.waitDeploys(t, "m1/switch", "m2/switch")
+		require.Equal(t, store.StatusToString(store.Failed), r.d.Deployment().Status)
+		r.waitDrift(t, "leaseless")
 
-	for _, d := range r.s.DeploymentList() {
-		if isTestingDeployment(d) {
-			assert.True(t, r.ls.IsReleased(d.Uuid), "testing deployment %s released", d.Generation.GetSelectedCommitId())
-		}
-	}
-	statesMu.Lock()
-	defer statesMu.Unlock()
-	assert.False(t, states["leaseless"], "observed states: %v", states)
+		assert.Equal(t, "submitted:switch", r.fetchDeploy(mainGeneration("m3", "/nix/store/m3")))
+		r.waitDeploys(t, "m1/switch", "m2/switch", "m3/switch")
+		r.waitDrift(t, "none")
+	})
 }
 
 // ---------------------------------------------------------------------
@@ -746,12 +612,13 @@ func TestDriftSinceRecordedWithoutStatusQueries(t *testing.T) {
 // Corrupt lease state
 // ---------------------------------------------------------------------
 
-// A truncated lease-state file loses every mark. Nothing is released or
-// returned (no deployment counts as lease-aware), and every testing head
-// deployed before the loss counts as ended: the deploy gate refuses it
-// and the fetcher's selection excludes it. (The deployer itself would
-// skip t1 here as its previous deployment, so the gate is asked
-// directly.) Mutant: silent reset.
+// A truncated lease-state file loses every mark. Nothing is released (no
+// deployment counts as lease-aware), and every testing deployment that
+// ended before the loss counts as an ended override: the deploy gate
+// refuses its head and does not treat its system as comin's, so nothing
+// deploys over it. (The deployer itself would skip t1 here as its
+// previous deployment, so the gate is asked directly.) Mutant: silent
+// reset.
 func TestCorruptLeaseStateReleasesNothing(t *testing.T) {
 	dir := t.TempDir()
 	r1 := newRig(t, dir)
@@ -769,13 +636,14 @@ func TestCorruptLeaseStateReleasesNothing(t *testing.T) {
 	r2.exec.set("/nix/store/t1")
 	r2.start(t)
 	r2.waitDrift(t, "leaseless")
-	assert.Empty(t, r2.deployLog(), "no lease-aware mark survived, so nothing is released or returned")
+	assert.Empty(t, r2.deployLog(), "no lease-aware mark survived, so nothing is released")
 	for _, d := range r2.s.DeploymentList() {
 		assert.False(t, r2.ls.IsReleased(d.Uuid))
 	}
 	_, ok := r2.m.leaseDeployDecision(rebuilt(testingGeneration("t1", "m1")))
 	assert.False(t, ok, "the gate refuses a testing head deployed before the loss")
-	assert.True(t, r2.m.testingSelection().Excluded[testingHead(testingGeneration("t1", "m1"))], "the selection excludes it")
+	_, ok = r2.m.leaseDeployDecision(mainGeneration("m2", "/nix/store/m2"))
+	assert.False(t, ok, "the lost override's system is not comin's")
 
 	// The loss is recorded, so it still holds after another restart.
 	reloaded, err := leasestate.Load(r2.lsPath)
@@ -827,27 +695,4 @@ func TestProductionGoroutinesAreRaceFree(t *testing.T) {
 	waitFor(t, func() bool { return r.d.Idle() && r.processed() })
 	close(stop)
 	<-statusDone
-}
-
-// ---------------------------------------------------------------------
-// overrideLeaseFile null: be6025e's testing selection
-// ---------------------------------------------------------------------
-
-// Ruling 2: with the lease reader disabled, the fetcher's testing
-// selection is the default one, whatever the lease state holds. Mutant:
-// build the selection without checking that the feature is enabled.
-func TestNullLeaseFileKeepsDefaultTestingSelection(t *testing.T) {
-	f := newLeaseFixture(t, nil)
-	f.store.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: mainGeneration("m1", "/nix/store/m1")})
-	f.store.DeploymentInsert(&protobuf.Deployment{Uuid: "t1-dpl", Operation: "test", Status: store.StatusToString(store.Done), Generation: testingGeneration("t1", "m1")})
-	require.NoError(t, f.leaseState.MarkLeaseAware("t1-dpl"))
-	require.NoError(t, f.leaseState.Release([]string{"t1-dpl"}, false))
-	f.writeLease(t, "git")
-
-	enabled := f.testingSelection()
-	require.Equal(t, "m1", enabled.Base, "sanity: with the feature on, the selection is not the default")
-	require.NotEmpty(t, enabled.Excluded)
-
-	f.Manager.leaseReader = lease.NewReader("")
-	assert.Equal(t, repository.TestingSelection{}, f.testingSelection())
 }

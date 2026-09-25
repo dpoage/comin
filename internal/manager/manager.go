@@ -62,8 +62,8 @@ type Manager struct {
 
 	// leaseReader observes the override lease file (S1). A disabled
 	// reader (empty path) turns off the lease behaviours: the deploy
-	// gate admits everything, and nothing is deferred, released or
-	// returned. Drift status and switch-latest stay on.
+	// gate admits everything, and nothing is deferred or released.
+	// Drift status and switch-latest stay on.
 	leaseReader *lease.Reader
 	// leaseState is comin's own cross-restart bookkeeping for the
 	// override-lease feature (lease-aware/released marks, drift-since,
@@ -73,8 +73,20 @@ type Manager struct {
 	// else wakes the manager's loop.
 	pollPeriod time.Duration
 
-	// deferred is the latest main generation C1 refused while a lease
-	// was held; offerDeferred offers it once the lease is gone.
+	// deferred is the latest main generation the deploy gate refused;
+	// offerDeferred offers it once the gate may admit it.
+	//
+	// Lock order: deferredMu, like leasestate.State's own mutex, is a
+	// leaf. Nothing else is locked, no fetcher method is called and no
+	// channel is sent on while it is held, and the manager holds none of
+	// its locks while it calls the fetcher, the deployer, the store or
+	// the executor. FetchAndBuild receives RepositoryStatusCh, which
+	// the fetcher sends on while holding its f.mu, so nothing reached
+	// from FetchAndBuild may take f.mu: the only fetcher method the
+	// deploy gate calls, IsAncestor, takes no fetcher lock. The
+	// deployer's mutex is held only around non-blocking (select with
+	// default) channel sends, and the deployer calls the gate (its
+	// admission func) with it released.
 	deferredMu sync.Mutex
 	deferred   *protobuf.Generation
 }
@@ -115,7 +127,6 @@ func New(s *store.Store,
 		pollPeriod:              DefaultPollPeriod,
 	}
 	deployer.SetAdmission(m.admitQueued)
-	fetcher.SetTestingSelection(m.testingSelection)
 	// A switch-latest request made before a restart and never resolved
 	// is re-armed here, before the gRPC server can accept a new one, so
 	// a request arriving during startup is not deployed twice.
@@ -178,10 +189,10 @@ func (m *Manager) resolveExpectedGeneration() (*protobuf.Generation, error) {
 	return dpl.Generation, nil
 }
 
-// resolveSwitchLatest is the resolver of every switch-latest request
-// (operator requests and C3 returns); the deployer calls it at deploy
-// time. Resolving settles the request whether or not it finds a
-// generation, so it clears the persisted pending flag either way.
+// resolveSwitchLatest is the resolver of every switch-latest request; the
+// deployer calls it at deploy time. Resolving settles the request whether
+// or not it finds a generation, so it clears the persisted pending flag
+// either way.
 func (m *Manager) resolveSwitchLatest() (*protobuf.Generation, error) {
 	g, err := m.resolveExpectedGeneration()
 	m.clearPendingSwitchLatest()
@@ -319,7 +330,7 @@ func (m *Manager) Run(ctx context.Context) {
 	// C3, the deferred tier generation and S4 must be evaluated at least
 	// once per poll period even when the fetcher emits nothing (it only
 	// emits when the selected commit changes), so a lease that ends with
-	// no new commits still returns within one poll period.
+	// no new commits is still released within one poll period.
 	m.poll(time.Now().UTC())
 
 	for {

@@ -112,15 +112,6 @@ func (r *gitRig) fetch(t *testing.T, selected string) {
 	}, "the fetch never built %s", selected)
 }
 
-// fetchNoChange runs one poll of the remote that selects what the previous
-// one selected, so it emits nothing, and waits until its result reached
-// the fetcher (its main head is mainHead).
-func (r *gitRig) fetchNoChange(t *testing.T, mainHead string) {
-	t.Helper()
-	r.m.Fetcher.TriggerFetch([]string{"origin"})
-	waitFor(t, func() bool { return r.remote.names[r.m.Fetcher.MainHead()] == mainHead }, "the fetch never saw main %s", mainHead)
-}
-
 // named is the deploy log with commit hashes replaced by the test's names.
 func (r *gitRig) named() []string {
 	log := r.deployLog()
@@ -216,173 +207,15 @@ func TestC2GitLeaseTestingNotDescendingFromHeldRefused(t *testing.T) {
 	assert.False(t, ok, "y is not in comin's clone yet: an ancestry error refuses")
 }
 
-// P-DESCENT: under a git lease the testing selection is relative to the
-// held main commit. The tier moves to m2 while the lease is held, then the
-// override is extended with a commit that still descends from m1 only: it
-// deploys. Mutant: testing selection relative to the fetched main head.
-func TestC2GitLeaseExtendAfterTierMovedDeploys(t *testing.T) {
-	remote := newGitRemote(t)
-	m1 := remote.commit("", "m1")
-	remote.setBranch("main", m1)
-	r := newGitRig(t, t.TempDir(), remote)
-	r.start(t)
-	r.fetch(t, "m1")
-	r.waitDeploys(t, "m1/switch")
-	t1 := remote.commit(m1, "t1")
-	remote.setBranch("testing-r1", t1)
-	r.fetch(t, "t1")
-	r.waitDeploys(t, "m1/switch", "t1/test")
-	require.True(t, r.leaseExists())
-
-	m2 := remote.commit(m1, "m2")
-	remote.setBranch("main", m2)
-	r.fetchNoChange(t, "m2")
-
-	t1b := remote.commit(t1, "t1-extend")
-	remote.setBranch("testing-r1", t1b)
-	r.fetch(t, "t1-extend")
-	r.waitDeploys(t, "m1/switch", "t1/test", "t1-extend/test")
-	r.waitDrift(t, "held")
-}
-
-// ---------------------------------------------------------------------
-// P-TIER: after an override ends, the robot converges to its tier head
-// ---------------------------------------------------------------------
-
-// The robot deployed m1 and lags its tier: the remote main is m2 and the
-// override's testing head y is built on m2, so m2 only ever arrived
-// through the testing branch. When the override ends, comin returns to
-// the last main it deployed (m2 is not built), then deploys m2 once.
-// Mutant: offer only the deferred generation (no released-head exclusion
-// in the testing selection).
-func TestTierHeadCarriedByTestingDeploysAfterOverrideEnds(t *testing.T) {
-	cases := []struct {
-		name          string
-		leaseFirst    bool
-		deleteBranch  bool
-		restartBefore bool
-	}{
-		{name: "first deploy without a lease"},
-		{name: "first deploy with a git lease", leaseFirst: true},
-		{name: "restart before the tier head deploys", restartBefore: true},
-		{name: "remote branch deleted", deleteBranch: true},
-		{name: "remote branch deleted, then a restart", deleteBranch: true, restartBefore: true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			dir := t.TempDir()
-			remote := newGitRemote(t)
-			m1 := remote.commit("", "m1")
-			remote.setBranch("main", m1)
-			r := newGitRig(t, dir, remote)
-			r.start(t)
-			r.fetch(t, "m1")
-			r.waitDeploys(t, "m1/switch")
-			if c.leaseFirst {
-				r.writeLease(t, "git")
-			}
-
-			m2 := remote.commit(m1, "m2")
-			y := remote.commit(m2, "y")
-			remote.setBranch("main", m2)
-			remote.setBranch("testing-r1", y)
-			r.fetch(t, "y")
-			r.waitDeploys(t, "m1/switch", "y/test")
-			require.True(t, r.leaseExists())
-
-			if c.deleteBranch {
-				remote.deleteBranch("testing-r1")
-			}
-			require.NoError(t, os.Remove(r.lease))
-			r.waitDeploys(t, "m1/switch", "y/test", "m1/switch")
-
-			want := []string{"m1/switch", "y/test", "m1/switch", "m2/switch"}
-			if c.restartBefore {
-				r.stop()
-				r = newGitRig(t, dir, remote)
-				r.exec.set("/nix/store/" + m1)
-				r.start(t)
-				want = []string{"m2/switch"}
-			}
-			r.fetch(t, "m2")
-			r.waitDeploys(t, want...)
-			r.waitDrift(t, "none")
-			assert.Equal(t, "m2", r.current())
-		})
-	}
-}
-
-// The fetched main head was built while the git lease held it back, so the
-// return goes straight to it instead of passing through the last deployed
-// main. Mutant: always return to S4 expected.
-func TestReturnGoesStraightToBuiltTierHead(t *testing.T) {
-	remote := newGitRemote(t)
-	m1 := remote.commit("", "m1")
-	remote.setBranch("main", m1)
-	r := newGitRig(t, t.TempDir(), remote)
-	r.start(t)
-	r.fetch(t, "m1")
-	r.waitDeploys(t, "m1/switch")
-	t1 := remote.commit(m1, "t1")
-	remote.setBranch("testing-r1", t1)
-	r.fetch(t, "t1")
-	r.waitDeploys(t, "m1/switch", "t1/test")
-	require.True(t, r.leaseExists())
-
-	// The developer resets the testing branch to the held commit, so the
-	// next poll selects the new tier head m2, which is built and held
-	// back by the lease.
-	m2 := remote.commit(m1, "m2")
-	remote.setBranch("main", m2)
-	remote.setBranch("testing-r1", m1)
-	r.fetch(t, "m2")
-	waitFor(t, func() bool {
-		r.m.deferredMu.Lock()
-		defer r.m.deferredMu.Unlock()
-		return r.m.deferred != nil && r.m.deferred.SelectedCommitId == m2
-	}, "m2 held back by the lease")
-
-	require.NoError(t, os.Remove(r.lease))
-	r.waitDeploys(t, "m1/switch", "t1/test", "m2/switch")
-	r.waitDrift(t, "none")
-}
-
-// Ruling 3: once the override is released, the next poll selects the main
-// head again, which is the system comin just returned to. It is not
-// activated a second time. The later tier commit proves the pipeline has
-// handled that poll. Mutant: no "already deployed" rule in the gate.
-func TestMainReemittedAfterReturnIsNotRedeployed(t *testing.T) {
-	remote := newGitRemote(t)
-	m1 := remote.commit("", "m1")
-	remote.setBranch("main", m1)
-	r := newGitRig(t, t.TempDir(), remote)
-	r.start(t)
-	r.fetch(t, "m1")
-	r.waitDeploys(t, "m1/switch")
-	t1 := remote.commit(m1, "t1")
-	remote.setBranch("testing-r1", t1)
-	r.fetch(t, "t1")
-	r.waitDeploys(t, "m1/switch", "t1/test")
-	require.NoError(t, os.Remove(r.lease))
-	r.waitDeploys(t, "m1/switch", "t1/test", "m1/switch")
-
-	r.fetch(t, "m1")
-	waitFor(t, func() bool { return r.m.DeployConfirmer.status().Submitted == "" }, "the re-emitted m1 was confirmed")
-
-	m2 := remote.commit(m1, "m2")
-	remote.setBranch("main", m2)
-	r.fetch(t, "m2")
-	r.waitDeploys(t, "m1/switch", "t1/test", "m1/switch", "m2/switch")
-}
-
 // ---------------------------------------------------------------------
 // C3: released head after the remote branch is deleted
 // ---------------------------------------------------------------------
 
 // R4's order: the developer's testing branch is deleted on the remote,
-// then the lease ends and comin returns. comin's clone keeps the deleted
-// branch (fetch does not prune); after a restart the released head is not
-// selected again, the main head is, and it is already running.
+// then the lease ends and the operator switches back. comin's clone keeps
+// the deleted branch (fetch does not prune), so after a restart the
+// fetcher selects the released head again: it is not deployed. The next
+// tier commit is. Mutant: no released check in the deploy gate.
 func TestC3ReleasedHeadOfDeletedBranchNotRedeployedAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	remote := newGitRemote(t)
@@ -400,14 +233,19 @@ func TestC3ReleasedHeadOfDeletedBranchNotRedeployedAfterRestart(t *testing.T) {
 
 	remote.deleteBranch("testing-r1")
 	require.NoError(t, os.Remove(r1.lease))
+	r1.waitDrift(t, "leaseless")
+	require.NoError(t, r1.m.SwitchDeploymentLatest())
 	r1.waitDeploys(t, "m1/switch", "t1/test", "m1/switch")
 	r1.stop()
 
 	r2 := newGitRig(t, dir, remote)
 	r2.exec.set("/nix/store/" + m1)
 	r2.start(t)
-	r2.fetch(t, "m1")
+	r2.fetch(t, "t1")
+	m2 := remote.commit(m1, "m2")
+	remote.setBranch("main", m2)
+	r2.fetch(t, "m2")
+	r2.waitDeploys(t, "m2/switch")
 	r2.waitDrift(t, "none")
-	assert.Empty(t, r2.deployLog())
 	assert.False(t, r2.leaseExists())
 }

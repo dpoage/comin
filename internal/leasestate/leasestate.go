@@ -158,18 +158,13 @@ func (s *State) IsLeaseAware(uuid string) bool {
 }
 
 // Release records, in one write, that the deployments uuids belong to an
-// override that ended and must never again be treated as live, and, when
-// returning is true, that a switch-latest request is pending (the return
-// to the expected deployment). A crash therefore leaves either none of
-// this decision on disk or all of it.
-func (s *State) Release(uuids []string, returning bool) error {
+// override that ended and must never again be treated as live. A crash
+// leaves either none of them released on disk or all of them.
+func (s *State) Release(uuids []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, uuid := range uuids {
 		s.d.ReleasedDeployments[uuid] = true
-	}
-	if returning {
-		s.d.PendingSwitchLatest = true
 	}
 	return s.commit()
 }

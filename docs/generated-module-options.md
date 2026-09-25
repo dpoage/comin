@@ -361,32 +361,35 @@ null or string
 The path to a developer override lease file owned
 by another tool\. comin reads only whether the file exists and its
 top-level ` kind ` field; it never parses any other field\. While
-the file exists, and after it is gone until comin has released
-the override (below), comin deploys no main-branch generation;
-the newest one it held back is offered afterwards\. A new
-testing-branch head deploys only with no lease or a lease of kind
-` git `\. Under a ` git ` lease the head must descend from the running
-main commit, and it is selected relative to that commit even
-after the main branch moved on\. Once the file is gone and no
-deployment is queued or running, comin decides once: it releases
-every testing deployment it made on that branch and never selects
-or deploys their commits again, so the latest fetched main-branch
-commit is deployed\. It switches back only when the running system
-is one of those testing deployments (successful or failed) and not
-the last successful main-branch deployment: straight to the
-latest fetched main-branch commit when it is already built,
-otherwise to the last successful main-branch deployment, followed
-by the fetched commit\. A system comin did not deploy for the
-override (after a reboot, or changed out of band) is left as it
-is and reported as drift\. A main-branch commit that is already the
-running deployment is not deployed again\. If comin’s lease state
-file is unreadable, every testing deployment made before counts
-as released\. ` null ` disables only these lease behaviours\.
-Whatever this option is set to, ` comin status --json ` reports
-` drift `, the post-deployment command gets ` COMIN_OPERATION `, and
-` comin deployment switch-latest ` deploys the last successful
-main-branch deployment (or, under a ` git ` lease, the last testing
-one) with ` switch `, including after a restart\.
+the file exists comin deploys no main-branch generation on its
+own; it holds back the newest one\. A new testing-branch head
+deploys only with no lease or a lease of kind ` git `, and under a
+` git ` lease only when it descends from the running main commit\.
+Once the file is gone and no deployment is queued or running,
+comin releases every testing deployment it made while this option
+was set: it never deploys their testing-branch heads again, and it
+never switches the machine back on its own\. comin also deploys
+only over a system it owns: the last successful deployment (of
+the main branch, or under a ` git ` lease of either branch) or, when
+there is none yet, any system; or the system its own latest
+deployment activated, a failed one included\. A released testing
+deployment is never comin’s\. Over any other running system comin
+deploys nothing on its own, not even a newer main-branch commit or
+a new testing-branch head, and ` comin status --json ` reports the
+drift; only ` comin deployment switch-latest ` deploys over it\. That
+covers an override ended without a reboot, a break-glass or
+closure activated out of band, and a rollback made by another
+tool\. Deployments resume by
+themselves once the running system is the last successful
+main-branch deployment again (after a reboot back to it, for
+example) or after an operator runs ` comin deployment         switch-latest `; the main-branch commit held back meanwhile is
+then deployed\. If comin’s lease state file is unreadable, every
+testing deployment made before counts as released\. ` null `
+disables only these lease behaviours\. Whatever this option is set
+to, ` comin status --json ` reports ` drift `, the post-deployment
+command gets ` COMIN_OPERATION `, and ` comin deployment         switch-latest ` deploys the last successful main-branch deployment
+(or, under a ` git ` lease, the last testing one) with ` switch `,
+including after a restart\.
 
 
 

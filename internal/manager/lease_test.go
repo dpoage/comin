@@ -20,6 +20,7 @@ import (
 	"github.com/nlewo/comin/internal/store"
 	"github.com/nlewo/comin/internal/utils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -297,13 +298,17 @@ func distinctSwitchDeploymentsOf(f *leaseFixture, commit string) int {
 	return len(seen)
 }
 
-func TestC3ReleasesAllLeaseAwareTestingDeploysAndReturnsOnceToM(t *testing.T) {
+// Every lease-aware testing deployment is released, the older extend
+// included, and nothing is deployed. Mutants: release only the current
+// deployment; release a deployment with no lease-aware mark; return.
+func TestC3ReleasesAllLeaseAwareTestingDeploysWithoutReturning(t *testing.T) {
 	f := newLeaseFixture(t, nil)
 	m := mainGeneration("m1", "/nix/store/m1")
 	f.store.DeploymentInsert(&protobuf.Deployment{
 		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
 	})
 	seeded := distinctSwitchDeploymentsOf(f, "m1")
+	f.exec.set("/nix/store/m1") // the machine runs m1
 	f.writeLease(t, "git")
 
 	x1 := submitAndWait(t, f, testingGeneration("t1", "m1"), "test")
@@ -313,7 +318,7 @@ func TestC3ReleasesAllLeaseAwareTestingDeploysAndReturnsOnceToM(t *testing.T) {
 	assert.NoError(t, f.leaseState.MarkLeaseAware(x2.Uuid))
 
 	// A legacy deployment on the same branch, made by pre-round comin:
-	// no lease-aware mark. Mutant (d): release it anyway.
+	// no lease-aware mark.
 	legacy := &protobuf.Deployment{
 		Uuid:       "legacy-t0",
 		Operation:  "test",
@@ -323,27 +328,22 @@ func TestC3ReleasesAllLeaseAwareTestingDeploysAndReturnsOnceToM(t *testing.T) {
 	f.store.DeploymentInsert(legacy)
 
 	f.removeLease() // ended by operator: current system is still X2's, not M's.
-	f.checkRelease()
+	f.releaseEndedOverrides()
 
 	assert.True(t, f.leaseState.IsReleased(x1.Uuid), "the older extend deployment must be released too")
 	assert.True(t, f.leaseState.IsReleased(x2.Uuid))
 	assert.False(t, f.leaseState.IsReleased(legacy.Uuid), "a pre-round deployment with no lease-aware mark must never be released")
+	assert.True(t, f.deployer.Idle(), "C3 deploys nothing")
+	assert.Equal(t, seeded, distinctSwitchDeploymentsOf(f, "m1"))
+	assert.Equal(t, "t2", f.deployer.Deployment().Generation.GetSelectedCommitId())
+	assert.Equal(t, "leaseless", f.driftStatus(time.Now()).State)
 
-	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Equal(c, "m1", f.deployer.Deployment().Generation.GetSelectedCommitId())
-		assert.Equal(c, "switch", f.deployer.Deployment().Operation)
-	}, 3*time.Second, 20*time.Millisecond)
-	assert.Equal(t, seeded+1, distinctSwitchDeploymentsOf(f, "m1"), "exactly one return deployment")
-
-	// A second checkRelease (e.g. the next poll tick) must not return
-	// again: the current deployment is now M itself, not a testing one.
-	// checkRelease submits synchronously, and the deployer is not idle
-	// again until what it submitted has been recorded in the store.
-	f.checkRelease()
-	assert.Eventually(t, f.deployer.Idle, 5*time.Second, 5*time.Millisecond)
-	assert.Equal(t, seeded+1, distinctSwitchDeploymentsOf(f, "m1"))
-	// A new head of B still deploys.
+	// The machine runs the ended override: no new head deploys over it
+	// until it is back on m1.
 	_, ok := f.leaseDeployDecision(testingGeneration("t3", "m1"))
+	assert.False(t, ok)
+	f.exec.set("/nix/store/m1")
+	_, ok = f.leaseDeployDecision(testingGeneration("t3", "m1"))
 	assert.True(t, ok)
 }
 
@@ -364,14 +364,14 @@ func TestC3ExpectedDeploymentSkipsReleasedTestingHeads(t *testing.T) {
 	// Inserted after M: more recent in DeploymentList order.
 	f.store.DeploymentInsert(xDpl)
 	assert.NoError(t, f.leaseState.MarkLeaseAware(xDpl.Uuid))
-	assert.NoError(t, f.leaseState.Release([]string{xDpl.Uuid}, false))
+	assert.NoError(t, f.leaseState.Release([]string{xDpl.Uuid}))
 
 	got := f.expectedDeployment(f.store.DeploymentList(), true) // git lease live: testing counts
 	assert.NotNil(t, got)
 	assert.Equal(t, "m1", got.Generation.GetSelectedCommitId(), "a released testing deployment must never be expected again, even while testing counts")
 }
 
-func TestC3RebootEndedLeaseReturnsNothingAndTargetsMForSwitchLatest(t *testing.T) {
+func TestC3RebootEndedLeaseReleasesAndTargetsMForSwitchLatest(t *testing.T) {
 	for _, n := range []int{1, 2} {
 		f := newLeaseFixture(t, nil)
 		m := mainGeneration("m1", "/nix/store/m1")
@@ -379,6 +379,7 @@ func TestC3RebootEndedLeaseReturnsNothingAndTargetsMForSwitchLatest(t *testing.T
 			Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
 		})
 		seeded := distinctSwitchDeploymentsOf(f, "m1")
+		f.exec.set("/nix/store/m1") // the machine runs m1
 		f.writeLease(t, "git")
 
 		var last *protobuf.Deployment
@@ -392,10 +393,10 @@ func TestC3RebootEndedLeaseReturnsNothingAndTargetsMForSwitchLatest(t *testing.T
 		f.removeLease()
 		f.exec.set("/nix/store/m1")
 
-		f.checkRelease()
+		f.releaseEndedOverrides()
 		assert.Eventually(t, f.deployer.Idle, 5*time.Second, 5*time.Millisecond)
 		assert.True(t, f.leaseState.IsReleased(last.Uuid), "n=%d: C3 decided", n)
-		assert.Equal(t, seeded, distinctSwitchDeploymentsOf(f, "m1"), "n=%d: reboot already returned the machine, comin must not deploy again", n)
+		assert.Equal(t, seeded, distinctSwitchDeploymentsOf(f, "m1"), "n=%d: C3 never deploys", n)
 
 		drift := f.driftStatus(time.Now())
 		assert.Equal(t, "none", drift.State)
@@ -406,11 +407,11 @@ func TestC3RebootEndedLeaseReturnsNothingAndTargetsMForSwitchLatest(t *testing.T
 	}
 }
 
-// Mutant (f): evaluate only on fetch events. The lease is still present
-// when Run starts (so the one-time startup checkRelease call finds
-// nothing to do); only removed afterwards, so only the periodic ticker -
-// not a fetch event, not the startup call - can catch it.
-func TestC3NoFetchEventsReturnsWithinOnePollPeriod(t *testing.T) {
+// Mutant: evaluate C3 only on fetch events. The lease is still present
+// when Run starts (so the startup poll finds nothing to release); only
+// removed afterwards, so only the periodic ticker - not a fetch event, not
+// the startup poll - can catch it.
+func TestC3NoFetchEventsReleasesWithinOnePollPeriod(t *testing.T) {
 	x1 := &protobuf.Deployment{
 		Uuid:       "t1-dpl",
 		Operation:  "test",
@@ -437,11 +438,12 @@ func TestC3NoFetchEventsReturnsWithinOnePollPeriod(t *testing.T) {
 	assert.Equal(t, "t1", f.deployer.Deployment().Generation.GetSelectedCommitId())
 
 	f.removeLease()
-	// No fetch events, no manual checkRelease call: only a later tick
-	// of Run's ticker can catch this.
+	// No fetch events, no manual poll: only a later tick of Run's ticker
+	// can catch this.
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Equal(c, "m1", f.deployer.Deployment().Generation.GetSelectedCommitId())
+		assert.True(c, f.leaseState.IsReleased(x1.Uuid))
 	}, 2*time.Second, 20*time.Millisecond)
+	assert.Equal(t, "t1", f.deployer.Deployment().Generation.GetSelectedCommitId())
 }
 
 // Mutant (c): release while a deployment is in flight. A gated
@@ -494,7 +496,7 @@ func TestC3DoesNotReleaseWhileDeploymentInFlight(t *testing.T) {
 	assert.NoError(t, ls.MarkLeaseAware(x1.Uuid))
 
 	os.Remove(leasePath)
-	m.checkRelease()
+	m.releaseEndedOverrides()
 	assert.False(t, ls.IsReleased(x1.Uuid), "must not release while the post-deployment command is still running")
 
 	// Unblock the post-deployment command: only now is nothing in flight.
@@ -502,15 +504,15 @@ func TestC3DoesNotReleaseWhileDeploymentInFlight(t *testing.T) {
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.False(c, d.IsDeploying())
 	}, 3*time.Second, 10*time.Millisecond)
-	m.checkRelease()
+	m.releaseEndedOverrides()
 	assert.True(t, ls.IsReleased(x1.Uuid))
 }
 
 // C3 amendment (N5/g): a deployment is testing iff
 // Generation.SelectedBranchIsTesting, not store.IsTesting (operation-keyed).
 // A persist-triggered switch-latest redeploy of a testing head (operation
-// "switch") must still be released and trigger the return. Mutant:
-// classify testing with store.IsTesting.
+// "switch") must still be released, and never be S4 expected once the
+// lease is gone. Mutant: classify testing with store.IsTesting.
 func TestC3ClassifiesTestingBySelectedBranchNotOperation(t *testing.T) {
 	f := newLeaseFixture(t, nil)
 	m := mainGeneration("m1", "/nix/store/m1")
@@ -518,6 +520,7 @@ func TestC3ClassifiesTestingBySelectedBranchNotOperation(t *testing.T) {
 		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
 	})
 	seeded := distinctSwitchDeploymentsOf(f, "m1")
+	f.exec.set("/nix/store/m1") // the machine runs m1
 	f.writeLease(t, "git")
 
 	x := submitAndWait(t, f, testingGeneration("t1", "m1"), "test")
@@ -536,13 +539,14 @@ func TestC3ClassifiesTestingBySelectedBranchNotOperation(t *testing.T) {
 	assert.NoError(t, f.leaseState.MarkLeaseAware(xPrime.Uuid))
 
 	f.removeLease()
-	f.checkRelease()
+	f.releaseEndedOverrides()
 
-	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Equal(c, "m1", f.deployer.Deployment().Generation.GetSelectedCommitId())
-		assert.Equal(c, "switch", f.deployer.Deployment().Operation)
-	}, 3*time.Second, 20*time.Millisecond)
-	assert.Equal(t, seeded+1, distinctSwitchDeploymentsOf(f, "m1"))
+	assert.True(t, f.leaseState.IsReleased(xPrime.Uuid))
+	gen, err := f.resolveExpectedGeneration()
+	require.NoError(t, err)
+	assert.Equal(t, "m1", gen.SelectedCommitId)
+	assert.Equal(t, "leaseless", f.driftStatus(time.Now()).State)
+	assert.Equal(t, seeded, distinctSwitchDeploymentsOf(f, "m1"))
 }
 
 // ---------------------------------------------------------------------
@@ -555,13 +559,12 @@ func TestDecideDriftStatePrecedence(t *testing.T) {
 		in   driftInputs
 		want string
 	}{
-		{"held wins over everything", driftInputs{leaseExists: true, currentEqualsExpected: false, queued: true, inFlight: true, c3Holds: true}, "held"},
+		{"held wins over everything", driftInputs{leaseExists: true, currentEqualsExpected: false, queued: true, inFlight: true}, "held"},
 		{"none when current equals expected", driftInputs{currentEqualsExpected: true}, "none"},
 		{"none when nothing expected yet", driftInputs{hasExpected: false, currentEqualsExpected: false}, "none"},
-		{"none beats returning when both hold", driftInputs{hasExpected: true, currentEqualsExpected: true, queued: true, c3Holds: true, inFlight: true}, "none"},
+		{"none beats returning when both hold", driftInputs{hasExpected: true, currentEqualsExpected: true, queued: true, inFlight: true}, "none"},
 		{"returning when work is queued", driftInputs{hasExpected: true, currentEqualsExpected: false, queued: true}, "returning"},
 		{"returning when a fresh deploy is in flight", driftInputs{hasExpected: true, currentEqualsExpected: false, inFlight: true, inFlightAge: time.Minute}, "returning"},
-		{"returning when C3 is about to fire", driftInputs{hasExpected: true, currentEqualsExpected: false, c3Holds: true}, "returning"},
 		{"leaseless when nothing queued or in flight", driftInputs{hasExpected: true, currentEqualsExpected: false}, "leaseless"},
 		{"leaseless when the in-flight deploy is over the age bound", driftInputs{hasExpected: true, currentEqualsExpected: false, inFlight: true, inFlightAge: 45 * time.Minute}, "leaseless"},
 	}
@@ -605,22 +608,26 @@ func TestDriftStatusSinceIsPersistedAcrossReload(t *testing.T) {
 	assert.Equal(t, d1.Since.AsTime(), d2.Since.AsTime(), "since must survive a restart, not reset to the new observation time")
 }
 
-// C5 fixture: the lease file was just removed and C3 has not yet
-// evaluated (the current deployment is still the lease-aware testing one)
-// => returning, not leaseless.
-func TestC5ReturningWhenLeaseJustRemovedBeforeC3Runs(t *testing.T) {
+// C5 fixture: the lease file was just removed with the override still
+// running and C3 has not released it yet. Nothing will return the
+// machine, so it is leaseless drift at once, not returning. Mutant: count
+// C3's release conditions as returning.
+func TestC5LeaseJustRemovedIsLeaseless(t *testing.T) {
 	f := newLeaseFixture(t, nil)
 	m := mainGeneration("m1", "/nix/store/m1")
 	f.store.DeploymentInsert(&protobuf.Deployment{
 		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
 	})
+	f.exec.set("/nix/store/m1") // the machine runs m1
 	f.writeLease(t, "git")
 	x := submitAndWait(t, f, testingGeneration("t1", "m1"), "test")
 	assert.NoError(t, f.leaseState.MarkLeaseAware(x.Uuid))
+	require.Equal(t, "held", f.driftStatus(time.Now()).State)
 
-	f.removeLease() // C3 has not run yet: checkRelease() was never called.
+	f.removeLease() // C3 has not run: releaseEndedOverrides was never called.
 	d := f.driftStatus(time.Now())
-	assert.Equal(t, "returning", d.State)
+	assert.Equal(t, "leaseless", d.State)
+	assert.False(t, f.leaseState.IsReleased(x.Uuid))
 }
 
 // C5 fixture: a tier (main) deploy mid-activation, current-system already
@@ -721,7 +728,7 @@ func TestC7SwitchLatestTargetsExpectedNotLatestStoreEntry_RebootReleased(t *test
 	}
 	f.store.DeploymentInsert(x)
 	assert.NoError(t, f.leaseState.MarkLeaseAware(x.Uuid))
-	assert.NoError(t, f.leaseState.Release([]string{x.Uuid}, false))
+	assert.NoError(t, f.leaseState.Release([]string{x.Uuid}))
 
 	gen, err := f.resolveExpectedGeneration()
 	assert.NoError(t, err)

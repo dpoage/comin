@@ -1,19 +1,20 @@
 package manager
 
 // This file holds the manager's override-lease-aware decisions: the deploy
-// gate (C1 tier freeze, C2 kind gate and descent check, released heads),
-// applied when a generation is confirmed and again when the deployer is
-// about to start it; the tier generation C1 defers until the lease ends;
-// releasing the testing deployments of an ended override and returning to
-// the expected generation (C3); and the S4 drift status (C5), which shares
-// its "expected deployment" query and "would C3 fire" predicate with the
-// release logic so the two can never disagree.
+// gate (C1 tier freeze, C2 kind gate and descent check, released heads, and
+// the rule that comin only deploys over a system it owns), applied when a
+// generation is confirmed and again when the deployer is about to start
+// it; the tier generation the gate defers; releasing the testing
+// deployments of an ended override (C3), which never deploys anything; and
+// the S4 drift status (C5), which shares its "expected deployment" query
+// with the gate.
 
 import (
+	"slices"
 	"time"
 
+	"github.com/nlewo/comin/internal/lease"
 	"github.com/nlewo/comin/internal/protobuf"
-	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/store"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -82,27 +83,70 @@ func latestDeployment(deployments []*protobuf.Deployment, keep func(*protobuf.De
 	return latest
 }
 
+// ownsRunningSystem reports whether /run/current-system is a system comin
+// may deploy over. comin owns it when nothing is expected yet (a freshly
+// installed machine), when it is the S4 expected system, or when it is the
+// system of comin's latest deployment (in flight, or failed after the
+// activation repointed it) and that deployment is not an ended override
+// (endedOverride). Anything
+// else is not comin's: the testing system of an ended override, a
+// break-glass or closure activated out of band, a rollback done by another
+// tool. comin leaves such a system as it is, and S4 reports it, until it is
+// the expected one again (a reboot back to it, or `switch-latest`). When
+// it is not owned, the reason is returned for the log.
+func (m *Manager) ownsRunningSystem(obs lease.Observation) (owned bool, reason string) {
+	expected := m.expectedDeployment(m.storage.DeploymentList(), obs.IsGit())
+	if expected == nil {
+		return true, ""
+	}
+	current, err := m.executor.CurrentSystem()
+	if err != nil {
+		return false, "the current system cannot be read: " + err.Error()
+	}
+	if current == expected.Generation.GetOutPath() {
+		return true, ""
+	}
+	if latest := m.deployer.Deployment(); latest != nil && !m.endedOverride(latest) && current == latest.Generation.GetOutPath() {
+		return true, ""
+	}
+	return false, "the running system " + current + " is neither the expected " + expected.Generation.GetOutPath() + " nor comin's latest deployment"
+}
+
+// releasePending reports whether an override ended but C3 has not
+// recorded its release yet: no lease, and a lease-aware testing
+// deployment is still unreleased.
+func (m *Manager) releasePending(obs lease.Observation) bool {
+	if obs.Exists {
+		return false
+	}
+	for _, d := range m.storage.DeploymentList() {
+		if isTestingDeployment(d) && m.leaseState.IsLeaseAware(d.Uuid) && !m.leaseState.IsReleased(d.Uuid) {
+			return true
+		}
+	}
+	return false
+}
+
 // leaseDeployDecision is the deploy gate. It runs when a built generation
-// is confirmed and again when the deployer is about to start it (see
-// admitQueued), so a lease that appears while the generation is queued
-// still stops it. With the lease reader disabled (overrideLeaseFile is
-// null) it always admits: the decisions are be6025e's.
-//   - A main generation whose commit is the current, done, main
-//     deployment is not deployed again (a fetch re-emits it once the
-//     selection stops picking an ended override's testing head).
-//   - C1: while a lease exists, or its override ended but C3 has not
-//     released it yet, no main generation deploys; the refused
-//     generation is deferred until C3 has decided (offerDeferred). A
-//     main deployment ahead of C3 would leave the override unreleased,
-//     and its testing head selectable again.
+// is confirmed, again when the deployer is about to start it (see
+// admitQueued), so a change while the generation is queued still stops
+// it, and when the deferred generation is offered. With the lease reader
+// disabled (overrideLeaseFile is null) it always admits: the decisions are
+// be6025e's. A refused main generation is deferred (offerDeferred); a
+// refused testing generation is dropped.
+//   - C1: while a lease exists no main generation deploys.
+//   - After an override ended and before C3 recorded its release, nothing
+//     deploys: the ended override's head must be released before any
+//     decision can admit it.
 //   - C2: a lease of any kind but git refuses a testing head. Under a git
 //     lease the held main commit must be an ancestor of the testing head.
 //     With no lease there is no descent check: the repository already
 //     requires the testing head to descend from the fetched main head.
 //   - A testing head that is the commit of a released deployment of the
 //     same branch never deploys again.
+//   - Nothing deploys over a system comin does not own (ownsRunningSystem).
 //
-// switch-latest requests, C3 returns included, never pass through it.
+// switch-latest requests never pass through it.
 func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string, ok bool) {
 	operation = m.getOperationFromConfigurationOperations(g.SelectedRemoteName, g.SelectedBranchName)
 	if !m.leaseReader.Enabled() {
@@ -111,18 +155,18 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 	obs := m.leaseReader.Observe()
 
 	if !isTestingGeneration(g) {
-		if cur := m.deployer.Deployment(); cur != nil && cur.Status == store.StatusToString(store.Done) &&
-			!isTestingDeployment(cur) && cur.Generation.GetSelectedCommitId() == g.GetSelectedCommitId() {
-			logrus.Infof("manager: skipping deployment of the main generation %s: its commit %s is already deployed", g.Uuid, g.SelectedCommitId)
-			return operation, false
-		}
 		if obs.Exists {
 			logrus.Infof("manager: deferring the main generation %s: an override lease is held", g.Uuid)
 			m.setDeferred(g)
 			return operation, false
 		}
-		if m.unreleasedOverride(m.deployer.Deployment()) {
+		if m.releasePending(obs) {
 			logrus.Infof("manager: deferring the main generation %s: the ended override is not released yet", g.Uuid)
+			m.setDeferred(g)
+			return operation, false
+		}
+		if owned, reason := m.ownsRunningSystem(obs); !owned {
+			logrus.Infof("manager: deferring the main generation %s: %s", g.Uuid, reason)
 			m.setDeferred(g)
 			return operation, false
 		}
@@ -137,6 +181,14 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 	deployments := m.storage.DeploymentList()
 	if m.releasedHeads(deployments)[testingHead(g)] {
 		logrus.Infof("manager: skipping deployment of the testing generation %s: its commit %s is the head of an ended override", g.Uuid, g.SelectedCommitId)
+		return operation, false
+	}
+	if m.releasePending(obs) {
+		logrus.Infof("manager: skipping deployment of the testing generation %s: the ended override is not released yet", g.Uuid)
+		return operation, false
+	}
+	if owned, reason := m.ownsRunningSystem(obs); !owned {
+		logrus.Infof("manager: skipping deployment of the testing generation %s: %s", g.Uuid, reason)
 		return operation, false
 	}
 	if obs.IsGit() {
@@ -171,48 +223,42 @@ func (m *Manager) descendsFrom(g *protobuf.Generation, held string) bool {
 	return ok
 }
 
-func testingHead(g *protobuf.Generation) repository.TestingHead {
-	return repository.TestingHead{Remote: g.GetSelectedRemoteName(), Branch: g.GetSelectedBranchName(), Commit: g.GetSelectedCommitId()}
+// testingHeadKey names the head of a testing branch.
+type testingHeadKey struct {
+	remote, branch, commit string
 }
 
-// releasedHeads returns the heads of ended overrides: the commits of the
-// released testing deployments, per remote and branch. After the lease
-// state was lost (MarksLostAt), every testing deployment that ended before
-// the loss counts too, since its marks are unknown. The fetcher re-emits
-// such a head after a restart, and a remote branch deleted at override end
-// stays in comin's local repository, so without this an ended override
-// would come back.
-func (m *Manager) releasedHeads(deployments []*protobuf.Deployment) map[repository.TestingHead]bool {
+func testingHead(g *protobuf.Generation) testingHeadKey {
+	return testingHeadKey{remote: g.GetSelectedRemoteName(), branch: g.GetSelectedBranchName(), commit: g.GetSelectedCommitId()}
+}
+
+// endedOverride reports whether d is a testing deployment of an ended
+// override: released, or, after the lease state was lost (MarksLostAt),
+// ended before the loss, since its marks are unknown.
+func (m *Manager) endedOverride(d *protobuf.Deployment) bool {
+	if !isTestingDeployment(d) {
+		return false
+	}
+	if m.leaseState.IsReleased(d.Uuid) {
+		return true
+	}
 	lostAt := m.leaseState.MarksLostAt()
-	heads := map[repository.TestingHead]bool{}
+	return lostAt != nil && d.EndedAt != nil && d.EndedAt.AsTime().Before(*lostAt)
+}
+
+// releasedHeads returns the heads of ended overrides, per remote and
+// branch. The fetcher keeps selecting such a head while it is still the
+// branch head, re-emits it after a restart, and a remote branch deleted
+// at override end stays in comin's local repository, so without this an
+// ended override would come back.
+func (m *Manager) releasedHeads(deployments []*protobuf.Deployment) map[testingHeadKey]bool {
+	heads := map[testingHeadKey]bool{}
 	for _, d := range deployments {
-		if !isTestingDeployment(d) {
-			continue
-		}
-		lost := lostAt != nil && d.EndedAt != nil && d.EndedAt.AsTime().Before(*lostAt)
-		if lost || m.leaseState.IsReleased(d.Uuid) {
+		if m.endedOverride(d) {
 			heads[testingHead(d.Generation)] = true
 		}
 	}
 	return heads
-}
-
-// testingSelection is the fetcher's testing selection for the next fetch.
-// With the lease reader disabled it is the default one (be6025e's). Heads
-// of ended overrides are excluded, so once C3 has released a branch the
-// repository selects the fetched main head again, and the normal fetch
-// flow deploys it. Under a git lease a testing head is selected when it
-// descends from the held main commit, even after the tier moved on.
-func (m *Manager) testingSelection() repository.TestingSelection {
-	if !m.leaseReader.Enabled() {
-		return repository.TestingSelection{}
-	}
-	deployments := m.storage.DeploymentList()
-	selection := repository.TestingSelection{Excluded: m.releasedHeads(deployments)}
-	if m.leaseReader.Observe().IsGit() {
-		selection.Base = heldMainCommitId(deployments)
-	}
-	return selection
 }
 
 func (m *Manager) setDeferred(g *protobuf.Generation) {
@@ -229,35 +275,21 @@ func (m *Manager) takeDeferred() *protobuf.Generation {
 	return g
 }
 
-// deferredTierHead returns the deferred main generation when it is the
-// latest fetched main head, taking it. A deferred generation that is not
-// the fetched main head is dropped: the fetch flow brings the newer head.
-// When no fetch completed yet in this process, the deferred generation is
-// kept for offerDeferred.
-func (m *Manager) deferredTierHead() *protobuf.Generation {
-	m.deferredMu.Lock()
-	defer m.deferredMu.Unlock()
-	d := m.deferred
-	if d == nil {
-		return nil
-	}
-	head := m.Fetcher.MainHead()
-	if head == "" {
-		return nil
-	}
-	m.deferred = nil
-	if d.GetSelectedCommitId() != head {
-		return nil
-	}
-	return d
-}
-
-// offerDeferred offers the main generation C1 deferred, once: when there
-// is no lease and the deployer is idle, so after any C3 return has
-// finished. It goes through the deploy gate and Submit like a freshly
+// offerDeferred offers the main generation the gate deferred, once there
+// is no lease, the deployer is idle and comin owns the running system
+// again (after a reboot back to the expected system, or once a
+// switch-latest has activated it). Until then the generation stays
+// deferred. It goes through the deploy gate and Submit like a freshly
 // confirmed generation.
 func (m *Manager) offerDeferred() {
-	if !m.leaseReader.Enabled() || m.leaseReader.Observe().Exists || !m.deployer.Idle() {
+	if !m.leaseReader.Enabled() {
+		return
+	}
+	obs := m.leaseReader.Observe()
+	if obs.Exists || !m.deployer.Idle() {
+		return
+	}
+	if owned, _ := m.ownsRunningSystem(obs); !owned {
 		return
 	}
 	g := m.takeDeferred()
@@ -268,120 +300,44 @@ func (m *Manager) offerDeferred() {
 	if !ok {
 		return
 	}
-	logrus.Infof("manager: the override lease ended, deploying the deferred main generation %s", g.Uuid)
+	logrus.Infof("manager: deploying the deferred main generation %s", g.Uuid)
 	m.deployer.Submit(g, operation)
 }
 
-// unreleasedOverride reports whether dpl is a lease-aware testing
-// deployment C3 has not released yet: its override is live, or ended and
-// awaiting C3's decision.
-func (m *Manager) unreleasedOverride(dpl *protobuf.Deployment) bool {
-	return dpl != nil && isTestingDeployment(dpl) && m.leaseState.IsLeaseAware(dpl.Uuid) && !m.leaseState.IsReleased(dpl.Uuid)
-}
-
-// c3Candidate reports whether C3's release conditions currently hold, and
-// if so, the current lease-aware testing deployment they apply to: no
-// lease, nothing queued or in flight, and the current deployment is a
-// lease-aware testing deployment that finished, successfully or not (a
-// failed `switch-to-configuration test` usually leaves the system
-// activated), and that C3 has not released yet: C3 decides once per
-// ended override. It never mutates state: both checkRelease (which acts
-// on it) and driftStatus (which only reports it) call this.
-func (m *Manager) c3Candidate() (*protobuf.Deployment, bool) {
-	if !m.leaseReader.Enabled() || m.leaseReader.Observe().Exists {
-		return nil, false
-	}
-	if !m.deployer.Idle() {
-		return nil, false
-	}
-	dpl := m.deployer.Deployment()
-	if !m.unreleasedOverride(dpl) {
-		return nil, false
-	}
-	if dpl.Status != store.StatusToString(store.Done) && dpl.Status != store.StatusToString(store.Failed) {
-		return nil, false
-	}
-	return dpl, true
-}
-
-// checkRelease implements C3, one decision per ended override. Once the
-// lease is gone and nothing is queued or in flight, every lease-aware
-// testing deployment of the current deployment's branch is released. comin
-// returns only a system it deployed: when /run/current-system is the out
-// path of one of those released deployments and not the S4 expected one.
-// Anything else (a reboot back to it, a change made out of band) is left
-// as it is, for S4 to report. The release and the pending return are
-// written together, so a restart before the return deploys still returns
-// exactly once. The return is a switch-latest request, never skipped as
-// "already deployed". It goes straight to the fetched main head when that
-// head is built (the deferred generation); otherwise to S4 expected, and
-// the fetch flow brings the fetched main head afterwards.
-func (m *Manager) checkRelease() {
-	dpl, ok := m.c3Candidate()
-	if !ok {
+// releaseEndedOverrides implements C3: when there is no lease file and
+// nothing is queued or in flight (the post-deployment command, which
+// takes the lease, has returned), every lease-aware testing deployment not
+// released yet is recorded released, in one write. A released deployment
+// is never S4 expected, and its head never deploys again. Nothing is
+// deployed: returning the machine to its tier is the operator's
+// `switch-latest`. Testing deployments made by a pre-fork comin carry no
+// lease-aware mark and are never released.
+func (m *Manager) releaseEndedOverrides() {
+	if !m.leaseReader.Enabled() || m.leaseReader.Observe().Exists || !m.deployer.Idle() {
 		return
 	}
-	current, err := m.executor.CurrentSystem()
-	if err != nil {
-		logrus.Errorf("manager: could not read the current system: %s", err)
-		return
-	}
-	deployments := m.storage.DeploymentList()
-	branch := dpl.Generation.GetSelectedBranchName()
-	remote := dpl.Generation.GetSelectedRemoteName()
+	// The store can hold several rows of one deployment.
 	var release []string
-	deployedByOverride := false
-	for _, d := range deployments {
-		if !isTestingDeployment(d) {
-			continue
-		}
-		if d.Generation.GetSelectedBranchName() != branch || d.Generation.GetSelectedRemoteName() != remote {
-			continue
-		}
-		if !m.leaseState.IsLeaseAware(d.Uuid) {
-			continue
-		}
-		if d.Generation.GetOutPath() == current {
-			deployedByOverride = true
-		}
-		if !m.leaseState.IsReleased(d.Uuid) {
+	for _, d := range m.storage.DeploymentList() {
+		if isTestingDeployment(d) && m.leaseState.IsLeaseAware(d.Uuid) && !m.leaseState.IsReleased(d.Uuid) && !slices.Contains(release, d.Uuid) {
 			release = append(release, d.Uuid)
 		}
 	}
-
-	expected := m.expectedDeployment(deployments, false)
-	returning := deployedByOverride && expected != nil && current != expected.Generation.GetOutPath()
-	tierHead := m.deferredTierHead()
-	if err := m.leaseState.Release(release, returning); err != nil {
-		logrus.Errorf("manager: could not record the end of the override of %s/%s: %s", remote, branch, err)
-	}
-	if !returning {
-		logrus.Infof("manager: the override of %s/%s ended; the current system %s is left as it is", remote, branch, current)
-		if tierHead != nil {
-			// Not a return: the tier head is offered like any
-			// deferred tier commit.
-			m.setDeferred(tierHead)
-		}
+	if len(release) == 0 {
 		return
 	}
-	target := tierHead
-	if target == nil {
-		logrus.Infof("manager: the override of %s/%s ended, returning to %s", remote, branch, expected.Generation.GetOutPath())
-		m.deployer.SubmitLatest(m.resolveSwitchLatest)
+	if err := m.leaseState.Release(release); err != nil {
+		logrus.Errorf("manager: could not record the end of the override: %s", err)
 		return
 	}
-	logrus.Infof("manager: the override of %s/%s ended, returning to the fetched main head %s", remote, branch, target.GetOutPath())
-	m.deployer.SubmitLatest(func() (*protobuf.Generation, error) {
-		m.clearPendingSwitchLatest()
-		return target, nil
-	})
+	logrus.Infof("manager: the override ended; its testing deployments %v are released and the running system is left as it is", release)
 }
 
 // poll re-evaluates everything that can change without a fetch: C3, the
 // deferred tier generation, and the S4 drift episode (so `since` is
 // recorded even if nobody queries the status).
 func (m *Manager) poll(now time.Time) {
-	m.checkRelease()
+	m.releaseEndedOverrides()
 	m.offerDeferred()
 	m.driftStatus(now)
 }
@@ -397,14 +353,12 @@ type driftInputs struct {
 	inFlight              bool
 	inFlightAge           time.Duration
 	queued                bool
-	c3Holds               bool
 }
 
 // decideDriftState applies S4's precedence: held (lease exists) beats none
 // (already at expected, or nothing expected) beats returning (work queued,
-// an in-flight deploy under maxInFlightDeployAge, or C3 about to fire)
-// beats leaseless. none beats returning when both hold, e.g. a git lease
-// that just ended by reboot, already at expected, before C3 has run.
+// a switch-latest request included, or an in-flight deploy under
+// maxInFlightDeployAge) beats leaseless.
 func decideDriftState(in driftInputs) string {
 	if in.leaseExists {
 		return "held"
@@ -413,7 +367,7 @@ func decideDriftState(in driftInputs) string {
 		return "none"
 	}
 	inFlightCounts := in.inFlight && in.inFlightAge < maxInFlightDeployAge
-	if inFlightCounts || in.queued || in.c3Holds {
+	if inFlightCounts || in.queued {
 		return "returning"
 	}
 	return "leaseless"
@@ -453,8 +407,6 @@ func (m *Manager) driftStatus(now time.Time) *protobuf.Drift {
 		logrus.Errorf("manager: could not read the current system: %s", err)
 	}
 
-	_, c3Holds := m.c3Candidate()
-
 	state := decideDriftState(driftInputs{
 		leaseExists:           obs.Exists,
 		hasExpected:           hasExpected,
@@ -462,7 +414,6 @@ func (m *Manager) driftStatus(now time.Time) *protobuf.Drift {
 		inFlight:              inFlight,
 		inFlightAge:           inFlightAge,
 		queued:                queued,
-		c3Holds:               c3Holds,
 	})
 
 	var since *time.Time

@@ -20,11 +20,6 @@ type Fetcher struct {
 	submitRemotes      chan []string
 	RepositoryStatusCh chan *protobuf.RepositoryStatus
 	repo               repository.Repository
-	// testingSelection, when set, is asked for the testing selection
-	// of every fetch.
-	testingSelection func() repository.TestingSelection
-	// mainHead is the main commit of the latest fetch result.
-	mainHead string
 }
 
 func NewFetcher(repo repository.Repository) *Fetcher {
@@ -42,25 +37,9 @@ func (f *Fetcher) IsFetching() bool {
 	return f.isFetching.Load()
 }
 
-// SetTestingSelection installs the func asked for the testing selection
-// of every fetch. Without one, fetches use the default selection.
-func (f *Fetcher) SetTestingSelection(selection func() repository.TestingSelection) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.testingSelection = selection
-}
-
-// MainHead returns the main commit of the latest fetch result, whether or
-// not that fetch changed the selected commit. It is empty before the
-// first fetch completes.
-func (f *Fetcher) MainHead() string {
-	f.mu.RLock()
-	defer f.mu.RUnlock()
-	return f.mainHead
-}
-
 // IsAncestor reports whether the commit base is the commit top or one of
-// its ancestors in the local repository.
+// its ancestors in the local repository. It takes no fetcher lock, so it
+// is safe to call from the goroutine that receives RepositoryStatusCh.
 func (f *Fetcher) IsAncestor(base, top string) (bool, error) {
 	return f.repo.IsAncestor(base, top)
 }
@@ -101,7 +80,6 @@ func (f *Fetcher) Start(ctx context.Context) {
 			case rs := <-workerRepositoryStatusCh:
 				f.isFetching.Store(false)
 				f.mu.Lock()
-				f.mainHead = rs.MainCommitId
 				if rs.SelectedCommitId != f.repositoryStatus.SelectedCommitId || rs.SelectedBranchIsTesting.GetValue() != f.repositoryStatus.SelectedBranchIsTesting.GetValue() {
 					f.repositoryStatus = rs
 					f.RepositoryStatusCh <- rs
@@ -110,14 +88,7 @@ func (f *Fetcher) Start(ctx context.Context) {
 			}
 			if !f.isFetching.Load() && len(remotes) != 0 {
 				f.isFetching.Store(true)
-				f.mu.RLock()
-				selection := f.testingSelection
-				f.mu.RUnlock()
-				var testing repository.TestingSelection
-				if selection != nil {
-					testing = selection()
-				}
-				workerRepositoryStatusCh = f.repo.FetchAndUpdate(ctx, remotes, testing)
+				workerRepositoryStatusCh = f.repo.FetchAndUpdate(ctx, remotes)
 				remotes = []string{}
 			}
 		}
