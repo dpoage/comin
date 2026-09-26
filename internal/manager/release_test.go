@@ -541,3 +541,120 @@ func TestTierDeploysAfterOperatorEndedOverrideAndSwitchLatest(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------
+// A rollback to an earlier build of comin's
+// ---------------------------------------------------------------------
+
+// deployTwoMainCommits deploys m1, then m2, through the fetcher.
+func deployTwoMainCommits(t *testing.T, dir string) *gitRig {
+	t.Helper()
+	remote := newGitRemote(t)
+	m1 := remote.commit("", "m1")
+	remote.setBranch("main", m1)
+	r := newGitRig(t, dir, remote)
+	r.start(t)
+	r.fetch(t, "m1")
+	r.waitDeploys(t, "m1/switch")
+	remote.setBranch("main", remote.commit(m1, "m2"))
+	r.fetch(t, "m2")
+	r.waitDeploys(t, "m1/switch", "m2/switch")
+	return r
+}
+
+// Another tool (the platform's update watchdog) condemns m2 and activates
+// m1 again. m1 is comin's own earlier build: comin never activates m2
+// again on its own, in-process or when a restart re-emits it, S4 reports
+// leaseless drift, and a newer main commit m3 deploys. A break-glass
+// system in m1's place is not comin's: m3 is deferred and the break-glass
+// left running. Mutant: comin owns only the S4 expected system and its
+// latest deployment's.
+func TestRollbackToOwnBuildThenNewerMainDeploys(t *testing.T) {
+	variants(t, func(t *testing.T, restart bool) {
+		t.Run("rolled back to m1", func(t *testing.T) {
+			r := deployTwoMainCommits(t, t.TempDir())
+			r.exec.set("/nix/store/" + r.remote.hash("m1"))
+			log := []string{"m1/switch", "m2/switch"}
+			if restart {
+				r = r.restart(t)
+				log = []string{}
+				r.fetch(t, "m2")
+			}
+			for range 3 {
+				r.m.poll(time.Now().UTC())
+			}
+			r.waitDeploys(t, log...)
+			r.waitDrift(t, "leaseless")
+			assert.Equal(t, "m1", r.current())
+
+			r.remote.setBranch("main", r.remote.commit(r.remote.hash("m2"), "m3"))
+			r.fetch(t, "m3")
+			r.waitDeploys(t, append(log, "m3/switch")...)
+			r.waitDrift(t, "none")
+		})
+		t.Run("break-glass", func(t *testing.T) {
+			r := deployTwoMainCommits(t, t.TempDir())
+			r.exec.set("/nix/store/break-glass")
+			log := []string{"m1/switch", "m2/switch"}
+			if restart {
+				r = r.restart(t)
+				log = []string{}
+				r.fetch(t, "m2")
+			}
+			r.assertLeftAlone(t, "leaseless", log...)
+			assert.Equal(t, "/nix/store/break-glass", r.exec.get())
+		})
+	})
+}
+
+// comin is rolled back from m2 to m1, then n testing heads built on m2
+// deploy over m1 (comin's own) and the hook takes a git lease. The
+// override ends with the machine back on m1 (a reboot to the profile the
+// rollback left, or the watchdog rolling the testing system back): once
+// the override is released the repository selects m2 again and emits it.
+// The deployer's same-commit dedup compares it with the deployment before
+// the latest one in-process, and with the latest one after a restart, so
+// it only stops m2 in-process after a single testing deployment. comin
+// still never re-activates m2 on its own; m3 deploys. Mutant: no
+// rolled-back rule in the gate.
+func TestRolledBackBuildNotReactivatedAfterOverride(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d testing deploys", n), func(t *testing.T) {
+			variants(t, func(t *testing.T, restart bool) {
+				r := deployTwoMainCommits(t, t.TempDir())
+				m1, m2 := r.remote.hash("m1"), r.remote.hash("m2")
+				r.exec.set("/nix/store/" + m1)
+				log := []string{"m1/switch", "m2/switch"}
+				tip := m2
+				for i := 1; i <= n; i++ {
+					name := fmt.Sprintf("t%d", i)
+					tip = r.remote.commit(tip, name)
+					r.remote.setBranch("testing-r1", tip)
+					r.fetch(t, name)
+					log = append(log, name+"/test")
+					r.waitDeploys(t, log...)
+				}
+				require.True(t, r.leaseExists(), "the hook took a git lease")
+
+				r.exec.set("/nix/store/" + m1)
+				r = r.endLease(t, restart)
+				if restart {
+					log = []string{}
+				}
+				r.waitReleasedOnDisk(t)
+				r.fetch(t, "m2")
+				for range 3 {
+					r.m.poll(time.Now().UTC())
+				}
+				r.waitDeploys(t, log...)
+				r.waitDrift(t, "leaseless")
+				assert.Equal(t, "m1", r.current())
+
+				r.remote.setBranch("main", r.remote.commit(m2, "m3"))
+				r.fetch(t, "m3")
+				r.waitDeploys(t, append(log, "m3/switch")...)
+				r.waitDrift(t, "none")
+			})
+		})
+	}
+}
