@@ -607,6 +607,41 @@ func TestRollbackToOwnBuildThenNewerMainDeploys(t *testing.T) {
 	})
 }
 
+// After a rollback to m1, a newer commit m3 that leaves this host's system
+// unchanged builds m2's out path, the build comin was rolled back from:
+// comin does not activate it, in-process or after a restart, and S4
+// reports leaseless drift. m4, with another out path, deploys; m3's gate
+// decision precedes m4's, so an admitted m3 shows in that deploy log.
+// Mutant: the rolled-back rule compares commits only.
+func TestRolledBackBuildNotReactivatedByNewerCommit(t *testing.T) {
+	variants(t, func(t *testing.T, restart bool) {
+		r := deployTwoMainCommits(t, t.TempDir())
+		m1, m2 := r.remote.hash("m1"), r.remote.hash("m2")
+		r.exec.set("/nix/store/" + m1)
+		log := []string{"m1/switch", "m2/switch"}
+		if restart {
+			r = r.restart(t)
+			log = []string{}
+			r.fetch(t, "m2")
+		}
+		m3 := r.remote.commit(m2, "m3")
+		r.exec.buildsAs(m3, "/nix/store/"+m2)
+		r.remote.setBranch("main", m3)
+		r.fetch(t, "m3")
+		for range 3 {
+			r.m.poll(time.Now().UTC())
+		}
+		r.waitDeploys(t, log...)
+		r.waitDrift(t, "leaseless")
+		assert.Equal(t, "m1", r.current())
+
+		r.remote.setBranch("main", r.remote.commit(m3, "m4"))
+		r.fetch(t, "m4")
+		r.waitDeploys(t, append(log, "m4/switch")...)
+		r.waitDrift(t, "none")
+	})
+}
+
 // comin is rolled back from m2 to m1, then n testing heads built on m2
 // deploy over m1 (comin's own) and the hook takes a git lease. The
 // override ends with the machine back on m1 (a reboot to the profile the

@@ -27,10 +27,12 @@ import (
 )
 
 // controllableExecutor is a lease-test Executor double that lets a test set
-// what /run/current-system currently resolves to.
+// what /run/current-system currently resolves to, and which system a
+// commit builds.
 type controllableExecutor struct {
 	mu      sync.Mutex
 	current string
+	outs    map[string]string
 }
 
 func (e *controllableExecutor) set(current string) {
@@ -45,6 +47,17 @@ func (e *controllableExecutor) get() string {
 	return e.current
 }
 
+// buildsAs makes commit build out, as a commit that leaves this host's
+// system unchanged builds the system of its parent.
+func (e *controllableExecutor) buildsAs(commit, out string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.outs == nil {
+		e.outs = map[string]string{}
+	}
+	e.outs[commit] = out
+}
+
 func (e *controllableExecutor) ReadMachineId() (string, error) { return "", nil }
 func (e *controllableExecutor) NeedToReboot(_, _ string) bool  { return false }
 func (e *controllableExecutor) IsStorePathExist(string) bool   { return false }
@@ -53,9 +66,15 @@ func (e *controllableExecutor) Deploy(ctx context.Context, outPath, operation st
 	return false, "", nil
 }
 // Eval derives the out path from the commit, so a fetched commit C
-// deploys /nix/store/C.
+// deploys /nix/store/C, unless buildsAs says otherwise.
 func (e *controllableExecutor) Eval(ctx context.Context, repositoryPath, repositorySubdir, commitId, systemAttr, hostname string) (string, string, string, error) {
-	return "/nix/store/drv-" + commitId, "/nix/store/" + commitId, "", nil
+	e.mu.Lock()
+	out, ok := e.outs[commitId]
+	e.mu.Unlock()
+	if !ok {
+		out = "/nix/store/" + commitId
+	}
+	return "/nix/store/drv-" + commitId, out, "", nil
 }
 func (e *controllableExecutor) Build(ctx context.Context, drvPath string) error { return nil }
 

@@ -196,9 +196,11 @@ func (m *Manager) alreadyRunning(g *protobuf.Generation, obs lease.Observation) 
 //     same branch never deploys again.
 //   - Nothing deploys over a system comin does not own (ownsRunningSystem).
 //   - While comin is rolled back to an older build of its own
-//     (rolledBackFrom), the main commit of the deployment it was rolled
-//     back from is dropped, not deferred: comin never re-activates it on
-//     its own. A newer main commit deploys.
+//     (rolledBackFrom), a main generation of the deployment it was rolled
+//     back from, by commit or by out path, is dropped, not deferred: comin
+//     never re-activates that build on its own, not even through a newer
+//     commit that leaves the system unchanged. A newer main commit with
+//     another out path deploys.
 //   - A main generation that is already running as the expected
 //     deployment is dropped, not deferred (alreadyRunning).
 //
@@ -226,8 +228,8 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 			m.setDeferred(g)
 			return operation, false
 		}
-		if from := m.rolledBackFrom(obs); from != nil && from.Generation.GetSelectedCommitId() == g.GetSelectedCommitId() {
-			logrus.Infof("manager: skipping the main generation %s: the running system is an older deployment of comin's, rolled back from the deployment %s of its commit %s", g.Uuid, from.Uuid, g.SelectedCommitId)
+		if from := m.rolledBackFrom(obs); from != nil && (from.Generation.GetSelectedCommitId() == g.GetSelectedCommitId() || from.Generation.GetOutPath() == g.GetOutPath()) {
+			logrus.Infof("manager: skipping the main generation %s (commit %s, system %s): the running system is an older deployment of comin's, rolled back from the deployment %s of the commit %s and the system %s", g.Uuid, g.SelectedCommitId, g.OutPath, from.Uuid, from.Generation.SelectedCommitId, from.Generation.OutPath)
 			m.setDeferred(nil)
 			return operation, false
 		}

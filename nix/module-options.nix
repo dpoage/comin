@@ -257,25 +257,29 @@ in {
         latest deployment activated, a failed one included, or, when there
         is no last successful deployment (of the main branch, or under a
         `git` lease of either branch) yet, any system. A released testing
-        deployment is never comin's. Over any other running system comin
-        deploys nothing on its own, not even a newer main-branch commit or
-        a new testing-branch head, and `comin status --json` reports the
-        drift;
+        deployment is never comin's, nor, once no lease is held, a testing
+        deployment that ended before comin's lease state file was found
+        unreadable. Over any other running system comin deploys nothing on
+        its own, not even a newer main-branch commit or a new
+        testing-branch head, and `comin status --json` reports the drift;
         only `comin deployment switch-latest` deploys over it. That covers
         an override ended without a reboot and a break-glass or closure
         activated out of band. When another tool rolls the machine back to
         one of comin's successful deployments older than the last
         successful main-branch deployment, comin owns the running system
-        but never deploys the commit of that last deployment again on its
-        own, across a comin restart too; `comin status --json` reports the
-        drift, a newer main-branch commit deploys as usual, and `comin
-        deployment switch-latest` re-activates the deployment comin was
-        rolled back from. Deployments resume by themselves once comin owns
-        the system again (after a reboot back to one of its systems, for
-        example), or an operator runs `comin deployment switch-latest`.
-        comin then deploys the newest fetched main-branch commit, unless
-        it is the one running or the one comin was rolled back from,
-        within one poll and one fetch, across a comin restart too
+        and, as long as that older deployment runs, never activates the
+        build (out path) of that last deployment on its own, neither from
+        its commit nor from a newer commit that leaves the system
+        unchanged, across a comin restart too;
+        `comin status --json` reports the drift, a newer main-branch commit
+        that builds another system deploys as usual, and `comin deployment
+        switch-latest` re-activates the deployment comin was rolled back
+        from. Deployments resume by themselves once comin owns the system
+        again (after a reboot back to one of its systems, for example), or
+        an operator runs `comin deployment switch-latest`. comin then
+        deploys the newest fetched main-branch commit, unless it is the one
+        running or builds the system comin was rolled back from, within one
+        poll and one fetch, across a comin restart too
         — except when a testing-branch head comin refused (for example,
         fetched while a non-git lease was held or while comin did not own
         the running system) descends from that main-branch commit: then
