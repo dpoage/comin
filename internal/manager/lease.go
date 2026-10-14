@@ -91,13 +91,18 @@ func latestDeployment(deployments []*protobuf.Deployment, keep func(*protobuf.De
 // activation repointed it) and that deployment is not an ended override
 // (endedOverride), or when it is the system of any successful deployment
 // comin made that is not an ended override (ownDeployment), such as an
-// earlier build another tool rolled comin back to. Anything else is not
-// comin's: the testing system of an ended override, a break-glass or
-// closure activated out of band. comin leaves such a system as it is, and
-// S4 reports it, until it is comin's again (a reboot back to it, or
-// `switch-latest`). When it is not owned, the reason is returned for the
-// log.
-func (m *Manager) ownsRunningSystem(obs lease.Observation) (owned bool, reason string) {
+// earlier build another tool rolled comin back to. It also owns the
+// system the offered generation g builds when that is the running
+// system: activating it again is not deploying over anything. This lets
+// comin finish a deployment that was killed after the activation
+// repointed /run/current-system but before it was stored. It does not
+// apply when a stored deployment of that system is an ended override.
+// Anything else is not comin's: the testing system of an ended override,
+// a break-glass or closure activated out of band. comin leaves such a
+// system as it is, and S4 reports it, until it is comin's again (a
+// reboot back to it, or `switch-latest`). When it is not owned, the
+// reason is returned for the log.
+func (m *Manager) ownsRunningSystem(obs lease.Observation, g *protobuf.Generation) (owned bool, reason string) {
 	deployments := m.storage.DeploymentList()
 	expected := m.expectedDeployment(deployments, obs.IsGit())
 	if expected == nil {
@@ -116,6 +121,9 @@ func (m *Manager) ownsRunningSystem(obs lease.Observation) (owned bool, reason s
 	if m.ownDeployment(deployments, current) != nil {
 		return true, ""
 	}
+	if g != nil && current == g.GetOutPath() && !m.endedOverrideSystem(deployments, current) {
+		return true, ""
+	}
 	return false, "the running system " + current + " is not a system comin deployed"
 }
 
@@ -124,6 +132,14 @@ func (m *Manager) ownsRunningSystem(obs lease.Observation) (owned bool, reason s
 func (m *Manager) ownDeployment(deployments []*protobuf.Deployment, out string) *protobuf.Deployment {
 	return latestDeployment(deployments, func(d *protobuf.Deployment) bool {
 		return d.Generation.GetOutPath() == out && !m.endedOverride(d)
+	})
+}
+
+// endedOverrideSystem reports whether a stored deployment of the system
+// out is an ended override.
+func (m *Manager) endedOverrideSystem(deployments []*protobuf.Deployment, out string) bool {
+	return slices.ContainsFunc(deployments, func(d *protobuf.Deployment) bool {
+		return d.Generation.GetOutPath() == out && m.endedOverride(d)
 	})
 }
 
@@ -194,7 +210,9 @@ func (m *Manager) alreadyRunning(g *protobuf.Generation, obs lease.Observation) 
 //     requires the testing head to descend from the fetched main head.
 //   - A testing head that is the commit of a released deployment of the
 //     same branch never deploys again.
-//   - Nothing deploys over a system comin does not own (ownsRunningSystem).
+//   - Nothing deploys over a system comin does not own (ownsRunningSystem),
+//     but the generation whose system is already running deploys: that is
+//     the activation of a deployment killed before it was stored.
 //   - While comin is rolled back to an older build of its own
 //     (rolledBackFrom), a main generation of the deployment it was rolled
 //     back from, by commit or by out path, is dropped, not deferred: comin
@@ -223,7 +241,7 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 			m.setDeferred(g)
 			return operation, false
 		}
-		if owned, reason := m.ownsRunningSystem(obs); !owned {
+		if owned, reason := m.ownsRunningSystem(obs, g); !owned {
 			logrus.Infof("manager: deferring the main generation %s: %s", g.Uuid, reason)
 			m.setDeferred(g)
 			return operation, false
@@ -255,7 +273,7 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 		logrus.Infof("manager: skipping deployment of the testing generation %s: the ended override is not released yet", g.Uuid)
 		return operation, false
 	}
-	if owned, reason := m.ownsRunningSystem(obs); !owned {
+	if owned, reason := m.ownsRunningSystem(obs, g); !owned {
 		logrus.Infof("manager: skipping deployment of the testing generation %s: %s", g.Uuid, reason)
 		return operation, false
 	}
@@ -343,6 +361,12 @@ func (m *Manager) setDeferred(g *protobuf.Generation) {
 	m.deferred = g
 }
 
+func (m *Manager) peekDeferred() *protobuf.Generation {
+	m.deferredMu.Lock()
+	defer m.deferredMu.Unlock()
+	return m.deferred
+}
+
 func (m *Manager) takeDeferred() *protobuf.Generation {
 	m.deferredMu.Lock()
 	defer m.deferredMu.Unlock()
@@ -353,8 +377,9 @@ func (m *Manager) takeDeferred() *protobuf.Generation {
 
 // offerDeferred offers the main generation the gate deferred, once there
 // is no lease, the deployer is idle and comin owns the running system
-// again (after a reboot back to one of its own systems, or once a
-// switch-latest has activated it). Until then the generation stays
+// again (after a reboot back to one of its own systems, once a
+// switch-latest has activated it, or when the running system is the one
+// the deferred generation builds). Until then the generation stays
 // deferred. It goes through the deploy gate and Submit like a freshly
 // confirmed generation.
 func (m *Manager) offerDeferred() {
@@ -365,10 +390,14 @@ func (m *Manager) offerDeferred() {
 	if obs.Exists || !m.deployer.Idle() {
 		return
 	}
-	if owned, _ := m.ownsRunningSystem(obs); !owned {
+	g := m.peekDeferred()
+	if g == nil {
 		return
 	}
-	g := m.takeDeferred()
+	if owned, _ := m.ownsRunningSystem(obs, g); !owned {
+		return
+	}
+	g = m.takeDeferred()
 	if g == nil {
 		return
 	}
