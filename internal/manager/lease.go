@@ -211,8 +211,9 @@ func (m *Manager) alreadyRunning(g *protobuf.Generation, obs lease.Observation) 
 //   - A testing head that is the commit of a released deployment of the
 //     same branch never deploys again.
 //   - Nothing deploys over a system comin does not own (ownsRunningSystem),
-//     but the generation whose system is already running deploys: that is
-//     the activation of a deployment killed before it was stored.
+//     but the generation whose system is already running deploys: it is
+//     the activation of a deployment killed before it was stored. The
+//     system of an ended override stays foreign.
 //   - While comin is rolled back to an older build of its own
 //     (rolledBackFrom), a main generation of the deployment it was rolled
 //     back from, by commit or by out path, is dropped, not deferred: comin

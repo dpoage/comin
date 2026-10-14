@@ -381,7 +381,14 @@ its own, not even a newer main-branch commit or a new
 testing-branch head, and ` comin status --json ` reports the drift;
 only ` comin deployment switch-latest ` deploys over it\. That covers
 an override ended without a reboot and a break-glass or closure
-activated out of band\. When another tool rolls the machine back to
+activated out of band\. One generation is the exception: when no
+deployment in comin’s history owns the running system, but that
+system is the build (out path) of the generation comin offers,
+comin deploys that generation, for example after comin was
+killed during an activation, before it stored the deployment\.
+The exception does not apply when the running system is the
+system of an ended override (a released testing deployment, or
+one counted as released)\. When another tool rolls the machine back to
 one of comin’s successful deployments older than the last
 successful main-branch deployment, comin owns the running system
 and, as long as that older deployment runs, never activates the
@@ -409,7 +416,12 @@ branch back while it is still the head of its branch, on the
 remote or only in comin’s clone\. If comin’s lease state file is
 unreadable, comin never deploys the testing-branch head of a
 testing deployment made before again, and once no lease is held
-each such deployment counts as released\. ` null `
+each such deployment counts as released\. If the file is absent
+when comin starts (comin never wrote it, or it was moved aside),
+comin never deploys the testing-branch head of any stored testing
+deployment again, except the head of a deployment whose system
+runs now; comin records the exclusion in the lease state file\.
+Main-branch deployments and the systems comin owns do not change\. ` null `
 disables only these lease behaviours\. Whatever this option is set
 to, ` comin status --json ` reports ` drift `, the post-deployment
 command gets ` COMIN_OPERATION `, and ` comin deployment         switch-latest ` deploys the last successful main-branch deployment

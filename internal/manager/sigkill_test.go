@@ -49,7 +49,7 @@ func sigkilled(t *testing.T, g *protobuf.Generation, wantSubmit string) *rig {
 	return r2
 }
 
-// C2.P1, testing: the tip of the testing branch whose system the killed
+// Testing: the tip of the testing branch whose system the killed
 // comin had activated deploys with operation test after the restart, and
 // the hook takes the lease. Mutant: no running-system clause in
 // ownsRunningSystem.
@@ -63,7 +63,7 @@ func TestSigkillMidTestingSwitchDeploysTipAfterRestart(t *testing.T) {
 	assert.True(t, r.leaseExists(), "the hook took the lease")
 }
 
-// C2.P1, main: the same for a main generation.
+// Main: the same for a main generation.
 func TestSigkillMidMainSwitchDeploysAfterRestart(t *testing.T) {
 	g := mainGeneration("m2", "/nix/store/m2")
 	r := sigkilled(t, g, "submitted:switch")
@@ -72,7 +72,7 @@ func TestSigkillMidMainSwitchDeploysAfterRestart(t *testing.T) {
 	r.waitDeploys(t, "m2/switch")
 }
 
-// C2.P1, deferred: a main generation the gate deferred while the running
+// Deferred: a main generation the gate deferred while the running
 // system was foreign is offered again by the poll once the running system
 // is the one it builds. Mutant: offerDeferred asks ownsRunningSystem
 // without the generation.
@@ -108,7 +108,7 @@ func TestSigkillRunningSystemDoesNotOverrideLeaseChecks(t *testing.T) {
 	r.waitDeploys(t, "m1/switch")
 }
 
-// C2.P2: a running system that is not the offered generation's stays
+// A running system that is not the offered generation's stays
 // foreign: nothing deploys over a break-glass.
 func TestOutOfBandRunningSystemStaysRefused(t *testing.T) {
 	r := newRig(t, t.TempDir())
@@ -122,7 +122,7 @@ func TestOutOfBandRunningSystemStaysRefused(t *testing.T) {
 	r.waitDeploys(t, "m1/switch")
 }
 
-// C2.P2: the system of an ended override stays foreign, however the
+// The system of an ended override stays foreign, however the
 // generation that builds it is offered: a new commit with the identical
 // out path (testing or main), and the released head itself. Mutant: no
 // ended-override exclusion on the running-system clause.

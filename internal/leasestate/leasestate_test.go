@@ -152,8 +152,6 @@ func TestForgetDropsMarks(t *testing.T) {
 	assert.True(t, s2.IsLeaseAware("d2"))
 }
 
-// --- r213-c1 ---
-
 // Only a missing file is "absent at load": an existing file, readable or
 // not, is not, and a missing file records no loss. Mutant: Load never sets
 // absent.

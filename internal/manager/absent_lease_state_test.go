@@ -16,8 +16,8 @@ import (
 )
 
 // These tests restart comin over a store whose lease-state.json is gone
-// (never written by a pre-fork comin, or moved aside by the §5.3 return
-// runbook) and drive the whole fetch through the real repository package:
+// (never written by a pre-fork comin, or moved aside) and drive the
+// whole fetch through the real repository package:
 // selection, build, deploy gate and deployer.
 
 // newGitRigRunning is newGitRig on a machine that runs the system current
@@ -82,7 +82,7 @@ func (r *gitRig) excludedOnDisk(t *testing.T) []leasestate.Head {
 }
 
 // endedOverrideOnRemote leaves a released testing head t1 on testing-r1,
-// the machine back on m1 (the r213 F8b state) and comin stopped with its
+// the machine back on m1 and comin stopped with its
 // lease-state.json moved aside. It returns the two commit hashes.
 func endedOverrideOnRemote(t *testing.T, dir string, remote *gitRemote) (m1, t1 string) {
 	t.Helper()
@@ -107,7 +107,7 @@ func endedOverrideOnRemote(t *testing.T, dir string, remote *gitRemote) (m1, t1 
 	return m1, t1
 }
 
-// F8b: the ended head is still on the remote and lease-state.json is
+// The ended head is still on the remote and lease-state.json is
 // gone: comin neither selects nor deploys it, so the hook takes no lease,
 // and still not after a further restart, by which time the file exists
 // again (a lease-state write between the starts: a memory-only exclusion
