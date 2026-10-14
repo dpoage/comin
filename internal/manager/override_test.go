@@ -72,6 +72,14 @@ func newRig(t *testing.T, dir string) *rig {
 // the fetcher stopped.
 func newRigWithRepository(t *testing.T, dir string, newRepository func(mainCommitId string) repository.Repository) *rig {
 	t.Helper()
+	return newRigRunning(t, dir, "", newRepository)
+}
+
+// newRigRunning is newRigWithRepository on a machine that runs the system
+// current when comin starts: manager.New reads it, so it cannot be set
+// after the rig is built.
+func newRigRunning(t *testing.T, dir, current string, newRepository func(mainCommitId string) repository.Repository) *rig {
+	t.Helper()
 	bk := broker.New()
 	bk.Start()
 	s, err := store.New(bk, filepath.Join(dir, "store.json"), filepath.Join(dir, "gcroots"), 10, 10)
@@ -81,7 +89,7 @@ func newRigWithRepository(t *testing.T, dir string, newRepository func(mainCommi
 	// Like cmd/run.go, keep the usable state Load returns even when it
 	// reports the file unusable.
 	ls, lsErr := leasestate.Load(lsPath)
-	r := &rig{s: s, ls: ls, lsErr: lsErr, exec: &controllableExecutor{}, lease: filepath.Join(dir, "override.json"), lsPath: lsPath, failOut: map[string]bool{}}
+	r := &rig{s: s, ls: ls, lsErr: lsErr, exec: &controllableExecutor{current: current}, lease: filepath.Join(dir, "override.json"), lsPath: lsPath, failOut: map[string]bool{}}
 
 	var last *protobuf.Deployment
 	var mainCommitId string

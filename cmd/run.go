@@ -139,6 +139,8 @@ var runCmd = &cobra.Command{
 		if err != nil {
 			// Load still returns an empty, usable state: no testing
 			// deployment counts as lease-aware, so none is released.
+			// (A missing file is no error: manager.New excludes the
+			// heads of the stored testing deployments instead.)
 			logrus.Error(err)
 		}
 

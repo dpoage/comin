@@ -130,6 +130,42 @@ func New(s *store.Store,
 	}
 	deployer.SetAdmission(m.admitQueued)
 	fetcher.SetExcludedTestingHeads(m.excludedTestingHeads)
+	// A lease-state.json absent at start (never written, or moved aside)
+	// has forgotten which testing deployments ended, and the heads of
+	// ended overrides are still on the remote: exclude the head of every
+	// stored testing deployment from selection and the deploy gate
+	// (releasedHeads), persisted, so it holds once the file exists again.
+	// Ownership is not touched, so main keeps deploying (a first start of
+	// the fork over a pre-fork store is this case too). The head of a
+	// stored deployment whose system the machine runs now is the
+	// developer's running test, not an ended one: it is not excluded, so
+	// nothing activates over it that did not before.
+	if leaseState.AbsentAtLoad() && leaseReader.Enabled() {
+		current, err := executor.CurrentSystem()
+		if err != nil {
+			logrus.Warnf("manager: the current system cannot be read (%s): no stored testing head is exempted from the exclusion", err)
+		}
+		stored := s.DeploymentList()
+		running := map[leasestate.Head]bool{}
+		for _, d := range stored {
+			if g := d.GetGeneration(); isTestingDeployment(d) && err == nil && current != "" && g.GetOutPath() == current {
+				running[leasestate.Head{Remote: g.GetSelectedRemoteName(), Branch: g.GetSelectedBranchName(), Commit: g.GetSelectedCommitId()}] = true
+			}
+		}
+		var heads []leasestate.Head
+		for _, d := range stored {
+			g := d.GetGeneration()
+			h := leasestate.Head{Remote: g.GetSelectedRemoteName(), Branch: g.GetSelectedBranchName(), Commit: g.GetSelectedCommitId()}
+			if isTestingDeployment(d) && !running[h] {
+				heads = append(heads, h)
+			}
+		}
+		if err := leaseState.ExcludeHeads(heads); err != nil {
+			logrus.Errorf("manager: could not persist the excluded testing heads: %s", err)
+		} else if len(heads) > 0 {
+			logrus.Infof("manager: no lease state at start: the heads of the %d stored testing deployments are excluded", len(heads))
+		}
+	}
 	// A switch-latest request made before a restart and never resolved
 	// is re-armed here, before the gRPC server can accept a new one, so
 	// a request arriving during startup is not deployed twice.
