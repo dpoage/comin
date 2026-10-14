@@ -10,11 +10,14 @@
 package leasestate
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +31,18 @@ type data struct {
 	DriftSince            *time.Time      `json:"drift_since"`
 	PendingSwitchLatest   bool            `json:"pending_switch_latest"`
 	MarksLostAt           *time.Time      `json:"marks_lost_at"`
+	// ExcludedTestingHeads is additive and omitted when empty, so the
+	// file stays version 1: a comin that predates it loads the file and
+	// drops the field on its next write.
+	ExcludedTestingHeads []Head `json:"excluded_testing_heads,omitempty"`
+}
+
+// Head names the head of a testing branch. It has the fields of
+// repository.TestingHead, so the two convert directly.
+type Head struct {
+	Remote string `json:"remote"`
+	Branch string `json:"branch"`
+	Commit string `json:"commit"`
 }
 
 // State is comin's own persisted state for the override-lease feature. All
@@ -38,14 +53,18 @@ type State struct {
 	mu       sync.Mutex
 	filename string
 	d        data
+	// absent is set when Load found no file. It is a fact about the
+	// start, not persisted, and never changes afterwards.
+	absent bool
 }
 
 // Load reads the state file at filename. It always returns a usable
-// State. A missing file yields an empty State and a nil error (nothing is
-// written until the first mutation). A file that exists but cannot be
-// read or parsed yields an empty State AND a non-nil error: the caller
-// must report it. Every mark the file held is lost, so the State records
-// the moment of the loss (MarksLostAt) and writes it back at once.
+// State. A missing file yields an empty State, a nil error and
+// AbsentAtLoad() == true (nothing is written until the first mutation).
+// A file that exists but cannot be read or parsed yields an empty State
+// AND a non-nil error: the caller must report it. Every mark the file
+// held is lost, so the State records the moment of the loss (MarksLostAt)
+// and writes it back at once.
 func Load(filename string) (*State, error) {
 	s := &State{
 		filename: filename,
@@ -57,6 +76,7 @@ func Load(filename string) (*State, error) {
 	}
 	content, err := os.ReadFile(filename)
 	if os.IsNotExist(err) {
+		s.absent = true
 		return s, nil
 	}
 	if err != nil {
@@ -94,6 +114,43 @@ func (s *State) MarksLostAt() *time.Time {
 	}
 	t := *s.d.MarksLostAt
 	return &t
+}
+
+// AbsentAtLoad reports whether Load found no state file: comin never
+// wrote one, or it was moved aside. The marks it would have held are
+// unknown, but no loss is recorded (MarksLostAt stays nil) and nothing is
+// written until a mutation.
+func (s *State) AbsentAtLoad() bool {
+	return s.absent
+}
+
+// ExcludeHeads records, in one write, that the testing heads must never
+// be selected or deployed. An empty list writes nothing. Heads already
+// recorded are kept; the list stays sorted so the file is deterministic.
+func (s *State) ExcludeHeads(heads []Head) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	added := false
+	for _, h := range heads {
+		if !slices.Contains(s.d.ExcludedTestingHeads, h) {
+			s.d.ExcludedTestingHeads = append(s.d.ExcludedTestingHeads, h)
+			added = true
+		}
+	}
+	if !added {
+		return nil
+	}
+	slices.SortFunc(s.d.ExcludedTestingHeads, func(a, b Head) int {
+		return cmp.Or(strings.Compare(a.Remote, b.Remote), strings.Compare(a.Branch, b.Branch), strings.Compare(a.Commit, b.Commit))
+	})
+	return s.commit()
+}
+
+// ExcludedHeads returns the heads recorded by ExcludeHeads.
+func (s *State) ExcludedHeads() []Head {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.d.ExcludedTestingHeads)
 }
 
 // commit writes the current state to disk: a temporary file in the same

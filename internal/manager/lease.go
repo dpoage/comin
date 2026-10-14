@@ -310,16 +310,21 @@ func (m *Manager) endedOverride(d *protobuf.Deployment) bool {
 }
 
 // releasedHeads returns the heads of ended overrides, per remote and
-// branch. The repository never selects them (excludedTestingHeads) and
-// the gate refuses them: the branch head stays on the remote after the
-// override, and a remote branch deleted at override end stays in comin's
-// local repository, so without this an ended override would come back.
+// branch, and the heads leasestate excluded when it started without a
+// file (leasestate.ExcludedHeads). The repository never selects them
+// (excludedTestingHeads) and the gate refuses them: the branch head stays
+// on the remote after the override, and a remote branch deleted at
+// override end stays in comin's local repository, so without this an
+// ended override would come back.
 func (m *Manager) releasedHeads(deployments []*protobuf.Deployment) map[repository.TestingHead]bool {
 	heads := map[repository.TestingHead]bool{}
 	for _, d := range deployments {
 		if m.endedOverride(d) {
 			heads[testingHead(d.Generation)] = true
 		}
+	}
+	for _, h := range m.leaseState.ExcludedHeads() {
+		heads[repository.TestingHead(h)] = true
 	}
 	return heads
 }

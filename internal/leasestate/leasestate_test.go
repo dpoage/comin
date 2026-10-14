@@ -151,3 +151,96 @@ func TestForgetDropsMarks(t *testing.T) {
 	assert.False(t, s2.IsReleased("d1"))
 	assert.True(t, s2.IsLeaseAware("d2"))
 }
+
+// --- r213-c1 ---
+
+// Only a missing file is "absent at load": an existing file, readable or
+// not, is not, and a missing file records no loss. Mutant: Load never sets
+// absent.
+func TestAbsentAtLoad(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "lease-state.json")
+	s, err := Load(p)
+	assert.NoError(t, err)
+	assert.True(t, s.AbsentAtLoad())
+	assert.Nil(t, s.MarksLostAt())
+	_, err = os.Stat(p)
+	assert.True(t, os.IsNotExist(err), "Load writes nothing for a missing file")
+
+	assert.NoError(t, s.SetPendingSwitchLatest(true))
+	s2, err := Load(p)
+	assert.NoError(t, err)
+	assert.False(t, s2.AbsentAtLoad())
+
+	assert.NoError(t, os.WriteFile(p, []byte("{"), 0644))
+	s3, err := Load(p)
+	assert.Error(t, err)
+	assert.False(t, s3.AbsentAtLoad())
+	assert.NotNil(t, s3.MarksLostAt())
+}
+
+// The excluded heads are persisted in one write, survive a reload, and
+// leave the file at version 1. An empty list writes nothing. Mutant:
+// ExcludeHeads commits for an empty list.
+func TestExcludeHeadsPersistsAndEmptyWritesNothing(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "lease-state.json")
+	s, err := Load(p)
+	assert.NoError(t, err)
+	assert.NoError(t, s.ExcludeHeads(nil))
+	_, err = os.Stat(p)
+	assert.True(t, os.IsNotExist(err), "no heads, no write")
+
+	b := Head{Remote: "origin", Branch: "testing-r1", Commit: "b"}
+	a := Head{Remote: "origin", Branch: "testing-r1", Commit: "a"}
+	assert.NoError(t, s.ExcludeHeads([]Head{b, a, b}))
+	assert.Equal(t, []Head{a, b}, s.ExcludedHeads())
+
+	s2, err := Load(p)
+	assert.NoError(t, err)
+	assert.Equal(t, []Head{a, b}, s2.ExcludedHeads())
+	assert.False(t, s2.AbsentAtLoad())
+	assert.Nil(t, s2.MarksLostAt())
+
+	raw, err := os.ReadFile(p)
+	assert.NoError(t, err)
+	var d map[string]any
+	assert.NoError(t, json.Unmarshal(raw, &d))
+	assert.EqualValues(t, 1, d["version"])
+
+	// Recorded again, nothing changes on disk.
+	before, err := os.Stat(p)
+	assert.NoError(t, err)
+	assert.NoError(t, s2.ExcludeHeads([]Head{a}))
+	after, err := os.Stat(p)
+	assert.NoError(t, err)
+	assert.True(t, os.SameFile(before, after) && before.ModTime().Equal(after.ModTime()))
+}
+
+// The field is additive: a file without exclusions has none of it (the
+// shape the base writes), and a reader that predates it (decoding into
+// the base's struct) loads a file that has it. Mutant: the field is not
+// omitempty.
+func TestExcludedTestingHeadsFieldIsAdditive(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "lease-state.json")
+	s, err := Load(p)
+	assert.NoError(t, err)
+	assert.NoError(t, s.MarkLeaseAware("d1"))
+	raw, err := os.ReadFile(p)
+	assert.NoError(t, err)
+	assert.NotContains(t, string(raw), "excluded_testing_heads")
+
+	assert.NoError(t, s.ExcludeHeads([]Head{{Remote: "origin", Branch: "testing-r1", Commit: "a"}}))
+	raw, err = os.ReadFile(p)
+	assert.NoError(t, err)
+	assert.Contains(t, string(raw), "excluded_testing_heads")
+	var base struct {
+		Version               int             `json:"version"`
+		LeaseAwareDeployments map[string]bool `json:"lease_aware_deployments"`
+		ReleasedDeployments   map[string]bool `json:"released_deployments"`
+		DriftSince            *time.Time      `json:"drift_since"`
+		PendingSwitchLatest   bool            `json:"pending_switch_latest"`
+		MarksLostAt           *time.Time      `json:"marks_lost_at"`
+	}
+	assert.NoError(t, json.Unmarshal(raw, &base))
+	assert.Equal(t, 1, base.Version)
+	assert.True(t, base.LeaseAwareDeployments["d1"])
+}
