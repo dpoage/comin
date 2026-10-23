@@ -156,9 +156,12 @@ func TestPreDeployLeaseRestartMidHookRunsHookAgain(t *testing.T) {
 	r.fetch(t, "m1")
 	h.waitStarts(t, m1, 1)
 
+	// The rig's stop cancels the stage context, which kills the command. In
+	// production comin's context is never cancelled; systemd's control-group
+	// kill ends the command when it stops or restarts the comin unit.
 	r.stop()
 	assert.Empty(t, r.deployLog())
-	assert.Empty(t, h.exits(m1), "the command was killed with comin")
+	assert.Empty(t, h.exits(m1), "the rig's stop killed the command")
 	h.clear("block-all")
 
 	next := newGitRig(t, dir, remote)
