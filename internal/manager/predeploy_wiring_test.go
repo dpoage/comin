@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -503,4 +504,133 @@ func TestPreDeployFailedMainReplacesOlderDeferred(t *testing.T) {
 	pollNow(r)
 	r.waitDeploys(t, "m1/switch", "m1b/switch", "m3/switch")
 	assert.Equal(t, []string{"1", "0"}, h.exits("gen-m3"))
+}
+
+func newDisabledReaderHookRig(t *testing.T) (*rig, *hookCtl) {
+	t.Helper()
+	dir := t.TempDir()
+	r := newRig(t, dir)
+	r.m.leaseReader = lease.NewReader("")
+	r.m.SetPollPeriod(time.Hour)
+	h := installHook(t, r.m, dir)
+	r.start(t)
+	return r, h
+}
+
+// t1 goes through the stage; quiesce lets m0's post-deployment poll finish first.
+func TestPreDeployDisabledLeaseReaderAdmittedTestingSupersedesFailedMain(t *testing.T) {
+	r, h := newDisabledReaderHookRig(t)
+	hookDeployMain(t, r, "m0")
+	r.quiesce()
+	h.set(t, "failonce-gen-m1")
+	require.Equal(t, "submitted:switch", hookTail(r, evalAt(mainGeneration("m1", "/nix/store/m1"), "gen-m1", 100)))
+	h.waitExits(t, "gen-m1", "1")
+	waitFor(t, r.stageIdle, "the stage is idle")
+	require.Equal(t, "gen-m1", r.deferredUuid())
+
+	require.Equal(t, "submitted:test", hookTail(r, evalAt(testingGeneration("t1", "m0"), "gen-t1", 200)))
+	r.waitDeploys(t, "m0/switch", "t1/test")
+	pollNow(r)
+	require.Never(t, func() bool { return h.starts("gen-m1") > 1 || len(r.deployLog()) > 2 }, 300*time.Millisecond, 10*time.Millisecond, "the failed m1 was offered again after t1")
+	assert.Equal(t, "", r.deferredUuid())
+}
+
+// pauseLog blocks, once, the goroutine that logs a message containing substr.
+type pauseLog struct {
+	substr  string
+	once    sync.Once
+	reached chan struct{}
+	release chan struct{}
+	unblock func()
+}
+
+func pauseOnLog(t *testing.T, substr string) *pauseLog {
+	t.Helper()
+	p := &pauseLog{substr: substr, reached: make(chan struct{}), release: make(chan struct{})}
+	var released sync.Once
+	p.unblock = func() { released.Do(func() { close(p.release) }) }
+	old := logrus.StandardLogger().ReplaceHooks(make(logrus.LevelHooks))
+	logrus.AddHook(p)
+	t.Cleanup(func() {
+		p.unblock()
+		logrus.StandardLogger().ReplaceHooks(old)
+	})
+	return p
+}
+
+func (p *pauseLog) Levels() []logrus.Level { return logrus.AllLevels }
+
+func (p *pauseLog) Fire(e *logrus.Entry) error {
+	if strings.Contains(e.Message, p.substr) {
+		p.once.Do(func() {
+			close(p.reached)
+			<-p.release
+		})
+	}
+	return nil
+}
+
+// m2 (older) fails while m3 is offered; with the reader disabled only m3 may deploy.
+func TestPreDeployDisabledLeaseReaderNewerOfferDuringFailure(t *testing.T) {
+	// m3 is Pending when m2's command exits 1: the stage supersedes m2 and hookFailed never runs.
+	t.Run("pending when the command fails", func(t *testing.T) {
+		r, h := newDisabledReaderHookRig(t)
+		hookDeployMain(t, r, "m1")
+		r.quiesce()
+		h.set(t, "block-gen-m2")
+		h.set(t, "failonce-gen-m2")
+		require.Equal(t, "submitted:switch", hookTail(r, evalAt(mainGeneration("m2", "/nix/store/m2"), "gen-m2", 100)))
+		h.waitStarts(t, "gen-m2", 1)
+		require.Equal(t, "submitted:switch", hookTail(r, evalAt(mainGeneration("m3", "/nix/store/m3"), "gen-m3", 200)))
+		require.Equal(t, "gen-m3", r.m.preDeploy.Status().Pending.Generation.Uuid)
+		h.clear("block-gen-m2")
+		r.waitDeploys(t, "m1/switch", "m3/switch")
+		pollNow(r)
+		require.Never(t, func() bool { return h.starts("gen-m2") > 1 || len(r.deployLog()) > 2 }, 300*time.Millisecond, 10*time.Millisecond, "m2 was offered again after m3")
+		assert.Equal(t, "", r.deferredUuid())
+	})
+	// m3 is offered inside hookFailed(m2), after the stage found no Pending and before m2 is deferred.
+	t.Run("offered while the failure is recorded", func(t *testing.T) {
+		r, h := newDisabledReaderHookRig(t)
+		hookDeployMain(t, r, "m1")
+		r.quiesce()
+		pause := pauseOnLog(t, "deferring the main generation gen-m2")
+		h.set(t, "failonce-gen-m2")
+		require.Equal(t, "submitted:switch", hookTail(r, evalAt(mainGeneration("m2", "/nix/store/m2"), "gen-m2", 100)))
+		select {
+		case <-pause.reached:
+		case <-time.After(waitDeadline):
+			t.Fatal("hookFailed never ran for m2")
+		}
+		require.Equal(t, "submitted:switch", hookTail(r, evalAt(mainGeneration("m3", "/nix/store/m3"), "gen-m3", 200)))
+		st := r.m.preDeploy.Status()
+		require.Equal(t, "gen-m2", st.Running.Generation.Uuid)
+		require.Equal(t, "gen-m3", st.Pending.Generation.Uuid)
+		pause.unblock()
+		r.waitDeploys(t, "m1/switch", "m3/switch")
+		pollNow(r)
+		require.Never(t, func() bool { return h.starts("gen-m2") > 1 || len(r.deployLog()) > 2 }, 300*time.Millisecond, 10*time.Millisecond, "m2 was offered again after m3")
+		assert.Equal(t, "", r.deferredUuid())
+	})
+}
+
+// Under a git lease the testing t2, evaluated after the frozen m2, leaves m2 deferred.
+func TestPreDeployTestingAdmissionKeepsFrozenMainUnderLease(t *testing.T) {
+	r, h := newHookRig(t)
+	hookDeployMain(t, r, "m1")
+	require.Equal(t, "submitted:test", hookTail(r, testingGeneration("t1", "m1")))
+	r.waitDeploys(t, "m1/switch", "t1/test")
+	require.True(t, r.leaseExists(), "the post-deployment command took a git lease")
+	require.Equal(t, "skipped:lease-decision", hookTail(r, evalAt(mainGeneration("m2", "/nix/store/m2"), "gen-m2", 100)))
+	require.Equal(t, "gen-m2", r.deferredUuid())
+
+	require.Equal(t, "submitted:test", hookTail(r, evalAt(testingGeneration("t2", "m1"), "gen-t2", 200)))
+	r.waitDeploys(t, "m1/switch", "t1/test", "t2/test")
+	assert.Equal(t, []string{"0"}, h.exits("gen-t2"))
+	assert.Equal(t, "gen-m2", r.deferredUuid())
+
+	r.exec.set("/nix/store/m1")
+	require.NoError(t, os.Remove(r.lease))
+	r.waitDeploys(t, "m1/switch", "t1/test", "t2/test", "m2/switch")
+	assert.Equal(t, []string{"0"}, h.exits("gen-m2"))
 }

@@ -204,7 +204,8 @@ func (m *Manager) submitAdmitted(g *protobuf.Generation, operation string) {
 		m.deployer.Submit(g, operation)
 		return
 	}
-	// The gate clears an older deferred generation only with the lease reader enabled.
+	// The gate clears an older deferred generation only with the lease reader enabled;
+	// clearing here too keeps a concurrent offerDeferred from taking it during g's command.
 	if !isTestingGeneration(g) {
 		m.setDeferred(g, nil)
 	}
@@ -233,6 +234,10 @@ func (m *Manager) afterHook(g *protobuf.Generation, _ string) {
 	operation, ok := m.leaseDeployDecision(g)
 	if !ok {
 		return
+	}
+	// The disabled gate clears nothing, and a testing admission must not clear under a lease.
+	if !m.leaseReader.Enabled() {
+		m.setDeferred(g, nil)
 	}
 	m.deployer.Submit(g, operation)
 }
