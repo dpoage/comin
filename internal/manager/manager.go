@@ -269,6 +269,7 @@ func (m *Manager) toState() *protobuf.State {
 		BuildConfirmer:  m.BuildConfirmer.status(),
 		DeployConfirmer: m.DeployConfirmer.status(),
 		Drift:           m.driftStatus(time.Now().UTC()),
+		PreDeploy:       preDeployState(m.preDeploy),
 	}
 }
 
