@@ -69,6 +69,7 @@ type Configuration struct {
 	Exporter              HttpServer `yaml:"exporter"`
 	GpgPublicKeyPaths     []string   `yaml:"gpg_public_key_paths"`
 	PostDeploymentCommand string     `yaml:"post_deployment_command"`
+	PreDeploymentCommand  string     `yaml:"pre_deployment_command"`
 	BuildConfirmer        Confirmer  `yaml:"build_confirmer"`
 	DeployConfirmer       Confirmer  `yaml:"deploy_confirmer"`
 	// OverrideLeaseFile is the path to a developer override lease file
