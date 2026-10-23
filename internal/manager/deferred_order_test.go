@@ -101,8 +101,7 @@ func newGateRig(t *testing.T) *rig {
 	return r
 }
 
-// A decision on g never replaces or clears a deferred generation evaluated
-// after g, on every branch of the gate and through both of its callers.
+// A decision on g never replaces or clears a deferred generation evaluated after g.
 func TestDeferredGateBranchesKeepNewerGeneration(t *testing.T) {
 	entries := map[string]func(r *rig, g *protobuf.Generation) bool{
 		"confirmed": func(r *rig, g *protobuf.Generation) bool {
@@ -195,9 +194,8 @@ func (e *hookExecutor) CurrentSystem() (string, error) {
 	return e.controllableExecutor.CurrentSystem()
 }
 
-// offerDeferred takes the deferred generation before it decides on it, so a
-// newer generation can only arrive in between: the hook installs one at the
-// first read of the running system after the take.
+// The hook installs a newer generation at the first read of the running
+// system after offerDeferred took the deferred one.
 func TestDeferredOfferKeepsNewerGeneration(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -260,10 +258,8 @@ func TestDeferredOfferKeepsNewerGeneration(t *testing.T) {
 	}
 }
 
-// m1 runs; m1b is deploying and m2 queued behind it when a session lease
-// appears and m3, evaluated after m2, is confirmed and deferred. m1b ends,
-// the deployer refuses m2: m3 must stay deferred and deploy once the lease
-// ends; m2 never deploys.
+// m2 is queued behind m1b when a session lease appears and m3, evaluated
+// after m2, is deferred: m2's refusal leaves m3, which deploys once the lease ends.
 func TestAs4oOlderRefusalKeepsNewerDeferred(t *testing.T) {
 	r := newRig(t, t.TempDir())
 	r.start(t)
@@ -304,9 +300,8 @@ func TestDeferredAdmittedOlderLeavesNewerDeferred(t *testing.T) {
 	r.waitDeploys(t, "m1/switch", "m1b/switch", "m2/switch", "m3/switch")
 }
 
-// As TestAs4oOlderRefusalKeepsNewerDeferred and
-// TestDeferredAdmittedOlderLeavesNewerDeferred through the fetcher, builder
-// and a real repository: production stamps EvalStartedAt, the test sets none.
+// The two tests above through the fetcher, builder and a real repository:
+// production stamps EvalStartedAt, the test sets none.
 func TestDeferredOrderFromFetchedGenerations(t *testing.T) {
 	for _, leaseEndsFirst := range []bool{false, true} {
 		name := "lease ends after m2 is refused"

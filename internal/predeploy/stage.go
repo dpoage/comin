@@ -56,8 +56,8 @@ func New(command string, submit SubmitFunc, fail FailFunc) *Stage {
 	}
 }
 
-// Run starts the worker and returns. Once ctx is done the stage starts no
-// command and calls neither submit nor fail; Offer then does nothing.
+// Run starts the worker and returns; call it once. Once ctx is done the stage
+// starts no command and calls neither submit nor fail; Offer then does nothing.
 func (s *Stage) Run(ctx context.Context) {
 	s.mu.Lock()
 	s.ctx = ctx

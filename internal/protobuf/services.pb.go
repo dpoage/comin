@@ -1530,8 +1530,9 @@ func (x *Store) GetGenerations() []*Generation {
 }
 
 // PreDeploy is the pre-deployment stage: the generation whose command runs
-// and the one waiting for it. It is always populated; a field is null when
-// nothing runs or waits, and both are null when no command is configured.
+// and the one waiting for it. A field is null when nothing runs or waits,
+// and both are null when no command is configured. A daemon that predates
+// State.pre_deploy leaves the whole message unset.
 type PreDeploy struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Running       *PreDeployEntry        `protobuf:"bytes,1,opt,name=running" json:"running,omitempty"`

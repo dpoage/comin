@@ -503,20 +503,28 @@ The command receives comin’s own environment plus these
 variables: ` COMIN_GIT_SHA `, ` COMIN_GIT_REF `, ` COMIN_GIT_MSG `,
 ` COMIN_HOSTNAME `, ` COMIN_GENERATION `, ` COMIN_OPERATION ` (the
 operation of the planned deployment: ` switch `, ` test ` or ` boot `)
-and ` COMIN_OUT_PATH ` (the store path of the built system)\. The
-output of the command goes to the journal of comin while the
-command runs\.
+and ` COMIN_OUT_PATH ` (the store path of the built system)\. While
+the command runs, comin logs each line of its output to comin’s
+log\.
 
-If the command ends with exit status 0, comin deploys the
-generation\. If the command ends with a nonzero exit status,
-is killed, or does not start, comin does not deploy the
-generation now and logs an error\. comin offers a main-branch
-generation again on a later poll, and the command runs again\.
-comin drops a testing-branch generation: push the branch
-again or restart comin to run the command for it\.
+If the command ends with exit status 0, comin checks the rules
+of ` overrideLeaseFile ` again and then deploys the generation\.
+comin does not deploy the generation when those rules now
+refuse it, or when a newer main-branch generation is deferred\.
+If the command ends with a nonzero exit status, is killed, or
+does not start, comin does not deploy the generation and logs
+an error\. comin then defers a main-branch generation, and the
+command runs again when comin offers that generation again,
+unless a newer generation is deferred: that one replaces it\.
+comin drops a testing-branch generation\. To run the command
+for it again, push a new commit to the branch or restart comin\.
+
+` comin status ` shows the generation whose command runs and the
+generation that waits, in its Pre-deploy section
+(` pre_deploy ` in the output of ` comin status --json `)\.
 
 comin applies no timeout\. The command must bound its own run
-time\. If comin stops or restarts, the command stops with comin\.
+time\. When comin shuts down, it kills the running command\.
 After a restart, the generation reaches the command again
 through the normal path\. ` comin deployment switch-latest ` does
 not run the command\.
