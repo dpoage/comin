@@ -59,8 +59,9 @@ func runHook(ctx context.Context, command string, g *pb.Generation, operation st
 	return err
 }
 
-// lineLogger logs each line at Info level as it arrives. Write never fails or
-// blocks, so the writing process is never stalled whatever the line length.
+// lineLogger logs each line at Info level as it arrives. Write never fails
+// and splits lines longer than maxLogLine; logrus is synchronous, so a slow
+// log sink stalls the writing process.
 type lineLogger struct {
 	generation string
 	stream     string

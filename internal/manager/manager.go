@@ -204,8 +204,9 @@ func (m *Manager) submitAdmitted(g *protobuf.Generation, operation string) {
 		m.deployer.Submit(g, operation)
 		return
 	}
-	// The gate clears an older deferred generation only with the lease reader enabled;
-	// clearing here too keeps a concurrent offerDeferred from taking it during g's command.
+	// The gate clears an older deferred generation only with the lease reader enabled.
+	// Clearing here too, before Offer, narrows the window in which offerDeferred
+	// could take it; the offerDeferred doc comment lists when it skips.
 	if !isTestingGeneration(g) {
 		m.setDeferred(g, nil)
 	}

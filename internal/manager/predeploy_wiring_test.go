@@ -17,10 +17,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// hookCtl drives the pre-deployment command of a manager under test. The
-// script logs "start <uuid> <sha>" when it starts and "exit <uuid> <sha>
-// <code>" when it ends; it waits while block-<uuid> or block-all exists and
-// exits 1 once for failonce-<uuid> or always for fail-<uuid>.
+// hookCtl drives the pre-deployment command of a manager under test. The script
+// logs "start <uuid> <sha>" and "exit <uuid> <sha> <code>", waits while block-<uuid>
+// or block-all exists, and exits 1 once for failonce-<uuid> or always for fail-<uuid>.
 type hookCtl struct {
 	dir string
 }

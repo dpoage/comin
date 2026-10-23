@@ -263,20 +263,36 @@ in {
           variables: `COMIN_GIT_SHA`, `COMIN_GIT_REF`, `COMIN_GIT_MSG`,
           `COMIN_HOSTNAME`, `COMIN_GENERATION`, `COMIN_OPERATION` (the
           operation of the planned deployment: `switch`, `test` or `boot`)
-          and `COMIN_OUT_PATH` (the store path of the built system). The
-          output of the command goes to the journal of comin while the
-          command runs.
+          and `COMIN_OUT_PATH` (the store path of the built system). comin
+          logs each line of the command's output to comin's log.
 
-          If the command ends with exit status 0, comin deploys the
-          generation. If the command ends with a nonzero exit status,
-          is killed, or does not start, comin does not deploy the
-          generation now and logs an error. comin offers a main-branch
-          generation again on a later poll, and the command runs again.
-          comin drops a testing-branch generation: push the branch
-          again or restart comin to run the command for it.
+          If the command ends with exit status 0, comin checks the rules
+          of `overrideLeaseFile` again. If those rules now refuse the
+          generation, comin does not deploy it. If the generation is a
+          main-branch generation and a newer main-branch generation is
+          deferred, comin does not deploy it either. Otherwise comin
+          queues the generation for deployment, as it does when no
+          command is set.
+
+          If the command ends with a nonzero exit status, is killed, or
+          does not start, comin does not deploy the generation and logs
+          an error. comin then defers a main-branch generation, and the
+          command runs again when comin offers that generation again,
+          unless a newer generation is deferred: that one replaces it.
+          comin drops a testing-branch generation. After comin restarts,
+          the same commit reaches the command again through the normal
+          path. A new commit on the testing branch reaches the command as
+          a new generation; the dropped generation does not.
+
+          `comin status` shows the generation whose command runs and the
+          generation that waits, in its Pre-deploy section
+          (`pre_deploy` in the output of `comin status --json`).
 
           comin applies no timeout. The command must bound its own run
-          time. If comin stops or restarts, the command stops with comin.
+          time. comin does not stop a running command when comin exits.
+          With the NixOS module, the command runs in the control group of
+          the `comin` systemd unit. When systemd stops or restarts that
+          unit, systemd kills the command, and comin logs no error for it.
           After a restart, the generation reaches the command again
           through the normal path. `comin deployment switch-latest` does
           not run the command.

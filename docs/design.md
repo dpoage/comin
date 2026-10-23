@@ -28,6 +28,9 @@ The main comin components are
 
 - the fetcher: fetch commits from remote and produce `RepositoryStatus`.
 - the builder: from a `RepositoryStatus`, it creates a `Generation` which is then evaluated and built.
+- the pre-deployment stage: when `preDeploymentCommand` is set, it runs
+  the command for a `Generation` before the manager submits that
+  `Generation` to the deployer.
 - the deployer: from a `Generation`, it creates a `Deployment` which
   is used to decide how to run the `switch-to-configuration` script.
 - the manager: it is in charge of managing all this components.
