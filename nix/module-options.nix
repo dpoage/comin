@@ -240,6 +240,53 @@ in {
           pkgs.writers.writeBash "post" "echo $COMIN_GIT_SHA";
         '';
       };
+      preDeploymentCommand = mkOption {
+        description = ''
+          The absolute path of a command that comin runs for a
+          generation before it deploys that generation. If the value is
+          null or empty, comin runs no command.
+
+          comin runs the command after a generation is built, confirmed
+          and admitted, and before the generation is deployed. A
+          generation is admitted when the rules of `overrideLeaseFile`
+          allow its deployment. comin checks those rules again after the
+          command exits.
+
+          comin runs one command at a time. While the command runs, a
+          newer generation waits, and it replaces any older waiting
+          generation. comin never cancels a running command. When the
+          command exits and a newer generation waits, comin does not
+          deploy the finished generation and runs the command for the
+          newest one.
+
+          The command receives comin's own environment plus these
+          variables: `COMIN_GIT_SHA`, `COMIN_GIT_REF`, `COMIN_GIT_MSG`,
+          `COMIN_HOSTNAME`, `COMIN_GENERATION`, `COMIN_OPERATION` (the
+          operation of the planned deployment: `switch`, `test` or `boot`)
+          and `COMIN_OUT_PATH` (the store path of the built system). The
+          output of the command goes to the journal of comin while the
+          command runs.
+
+          If the command ends with exit status 0, comin deploys the
+          generation. If the command ends with a nonzero exit status,
+          is killed, or does not start, comin does not deploy the
+          generation now and logs an error. comin offers a main-branch
+          generation again on a later poll, and the command runs again.
+          comin drops a testing-branch generation: push the branch
+          again or restart comin to run the command for it.
+
+          comin applies no timeout. The command must bound its own run
+          time. If comin stops or restarts, the command stops with comin.
+          After a restart, the generation reaches the command again
+          through the normal path. `comin deployment switch-latest` does
+          not run the command.
+        '';
+        type = nullOr str;
+        default = null;
+        example = lib.literalExpression ''
+          "''${pkgs.writeShellScript "pre-deploy" "echo $COMIN_GIT_SHA"}"
+        '';
+      };
       overrideLeaseFile = mkOption {
         description = "The path to a developer override lease file owned
         by another tool. comin reads only whether the file exists and its

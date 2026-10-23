@@ -21,6 +21,9 @@ in rec {
     lib.optionalAttrs (cfg.services.comin.postDeploymentCommand != null)
       { post_deployment_command = cfg.services.comin.postDeploymentCommand; }
   ) // (
+    lib.optionalAttrs (cfg.services.comin.preDeploymentCommand != null && cfg.services.comin.preDeploymentCommand != "")
+      { pre_deployment_command = cfg.services.comin.preDeploymentCommand; }
+  ) // (
     lib.optionalAttrs (cfg.services.comin.overrideLeaseFile != null)
       { override_lease_file = cfg.services.comin.overrideLeaseFile; }
   );
