@@ -19,6 +19,7 @@ import (
 	"github.com/nlewo/comin/internal/fetcher"
 	"github.com/nlewo/comin/internal/lease"
 	"github.com/nlewo/comin/internal/leasestate"
+	"github.com/nlewo/comin/internal/predeploy"
 	"github.com/nlewo/comin/internal/profile"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
@@ -73,7 +74,8 @@ type Manager struct {
 	// else wakes the manager's loop.
 	pollPeriod time.Duration
 
-	// deferred is the latest main generation the deploy gate refused;
+	// deferred is the newest main generation (by EvalStartedAt) the
+	// deploy gate refused or whose pre-deployment command failed;
 	// offerDeferred offers it once the gate may admit it.
 	//
 	// Lock order: deferredMu, like leasestate.State's own mutex, is a
@@ -91,6 +93,10 @@ type Manager struct {
 	// admission func) with it released.
 	deferredMu sync.Mutex
 	deferred   *protobuf.Generation
+
+	// preDeploy runs the pre-deployment command before a generation
+	// reaches the deployer; nil when the command is null.
+	preDeploy *predeploy.Stage
 }
 
 func New(s *store.Store,
@@ -179,6 +185,67 @@ func New(s *store.Store,
 // Run.
 func (m *Manager) SetPollPeriod(d time.Duration) {
 	m.pollPeriod = d
+}
+
+// SetPreDeploymentCommand installs the command that runs for each
+// generation before it is deployed; "" installs none. It must be called
+// before Run.
+func (m *Manager) SetPreDeploymentCommand(cmd string) {
+	if cmd == "" {
+		return
+	}
+	m.preDeploy = predeploy.New(cmd, m.afterHook, m.hookFailed)
+}
+
+// submitAdmitted hands a generation the deploy gate admitted to the
+// pre-deployment stage, or straight to the deployer when there is none.
+func (m *Manager) submitAdmitted(g *protobuf.Generation, operation string) {
+	if m.preDeploy == nil {
+		m.deployer.Submit(g, operation)
+		return
+	}
+	// The gate clears an older deferred generation only with the lease reader enabled.
+	if !isTestingGeneration(g) {
+		m.setDeferred(g, nil)
+	}
+	m.preDeploy.Offer(g, operation)
+}
+
+// preDeployBusy reports whether the stage holds a generation.
+func (m *Manager) preDeployBusy() bool {
+	if m.preDeploy == nil {
+		return false
+	}
+	st := m.preDeploy.Status()
+	return st.Running != nil || st.Pending != nil
+}
+
+// afterHook runs on the stage goroutine once the command exited 0 for g.
+// A main generation is dropped when a newer one is deferred; the others go
+// through the gate again, since the lease may have changed during the command.
+func (m *Manager) afterHook(g *protobuf.Generation, _ string) {
+	if !isTestingGeneration(g) {
+		if newer := m.newerDeferred(g); newer != nil {
+			logrus.Infof("manager: dropping the main generation %s after its pre-deployment command: the deferred generation %s is newer", g.Uuid, newer.Uuid)
+			return
+		}
+	}
+	operation, ok := m.leaseDeployDecision(g)
+	if !ok {
+		return
+	}
+	m.deployer.Submit(g, operation)
+}
+
+// hookFailed runs on the stage goroutine once the command failed for g.
+// A main generation is deferred, to be offered again; a testing one is dropped.
+func (m *Manager) hookFailed(g *protobuf.Generation, _ string, err error) {
+	if isTestingGeneration(g) {
+		logrus.Errorf("manager: dropping the testing generation %s (commit %s): its pre-deployment command failed: %s", g.Uuid, g.SelectedCommitId, err)
+		return
+	}
+	logrus.Warnf("manager: deferring the main generation %s (commit %s): its pre-deployment command failed: %s", g.Uuid, g.SelectedCommitId, err)
+	m.setDeferred(g, g)
 }
 
 func (m *Manager) GetState() *protobuf.State {
@@ -327,7 +394,7 @@ func (m *Manager) FetchAndBuild(ctx context.Context) {
 				if !ok {
 					continue
 				}
-				m.deployer.Submit(&generation, operation)
+				m.submitAdmitted(&generation, operation)
 			}
 		}
 	}()
@@ -361,6 +428,9 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 	m.prometheus.SetHostInfo(m.needToReboot, m.isSuspended)
 
+	if m.preDeploy != nil {
+		m.preDeploy.Run(ctx)
+	}
 	m.FetchAndBuild(ctx)
 	m.deployer.Run(ctx)
 

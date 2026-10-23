@@ -368,10 +368,25 @@ func (m *Manager) excludedTestingHeads() map[repository.TestingHead]bool {
 func (m *Manager) setDeferred(decided, next *protobuf.Generation) {
 	m.deferredMu.Lock()
 	defer m.deferredMu.Unlock()
-	if m.deferred != nil && evalStartedAt(m.deferred).After(evalStartedAt(decided)) {
+	if m.deferred != nil && evaluatedAfter(m.deferred, decided) {
 		return
 	}
 	m.deferred = next
+}
+
+// newerDeferred returns the deferred generation when it was evaluated after g.
+func (m *Manager) newerDeferred(g *protobuf.Generation) *protobuf.Generation {
+	m.deferredMu.Lock()
+	defer m.deferredMu.Unlock()
+	if m.deferred != nil && evaluatedAfter(m.deferred, g) {
+		return m.deferred
+	}
+	return nil
+}
+
+// evaluatedAfter is strict; a missing EvalStartedAt reads as the zero time.
+func evaluatedAfter(a, b *protobuf.Generation) bool {
+	return evalStartedAt(a).After(evalStartedAt(b))
 }
 
 func evalStartedAt(g *protobuf.Generation) time.Time {
@@ -396,26 +411,36 @@ func (m *Manager) takeDeferred() *protobuf.Generation {
 }
 
 // offerDeferred offers the main generation the gate deferred, once there
-// is no lease, the deployer is idle and comin owns the running system
-// again (after a reboot back to one of its own systems, once a
-// switch-latest has activated it, or when the running system is the one
-// the deferred generation builds). Until then the generation stays
-// deferred. It goes through the deploy gate and Submit like a freshly
-// confirmed generation.
+// is no lease, the deployer is idle, the pre-deployment stage is not busy
+// and comin owns the running system again (after a reboot back to one of
+// its own systems, once a switch-latest has activated it, or when the
+// running system is the one the deferred generation builds). Until then
+// the generation stays deferred. It goes through the deploy gate and
+// submitAdmitted like a freshly confirmed generation.
+//
+// With the lease reader disabled only a main generation whose
+// pre-deployment command failed can be deferred; it is offered without
+// the lease and ownership checks.
 func (m *Manager) offerDeferred() {
-	if !m.leaseReader.Enabled() {
-		return
+	leaseEnabled := m.leaseReader.Enabled()
+	var obs lease.Observation
+	if leaseEnabled {
+		obs = m.leaseReader.Observe()
+		if obs.Exists {
+			return
+		}
 	}
-	obs := m.leaseReader.Observe()
-	if obs.Exists || !m.deployer.Idle() {
+	if !m.deployer.Idle() || m.preDeployBusy() {
 		return
 	}
 	g := m.peekDeferred()
 	if g == nil {
 		return
 	}
-	if owned, _ := m.ownsRunningSystem(obs, g); !owned {
-		return
+	if leaseEnabled {
+		if owned, _ := m.ownsRunningSystem(obs, g); !owned {
+			return
+		}
 	}
 	g = m.takeDeferred()
 	if g == nil {
@@ -426,7 +451,7 @@ func (m *Manager) offerDeferred() {
 		return
 	}
 	logrus.Infof("manager: deploying the deferred main generation %s", g.Uuid)
-	m.deployer.Submit(g, operation)
+	m.submitAdmitted(g, operation)
 }
 
 // releaseEndedOverrides implements C3: when there is no lease file and

@@ -145,6 +145,7 @@ var runCmd = &cobra.Command{
 		}
 
 		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, leaseReader, leaseState)
+		manager.SetPreDeploymentCommand(cfg.PreDeploymentCommand)
 		// Started once manager.New has installed the fetcher's exclusion
 		// set, so no fetch runs without it.
 		fetcher.Start(cmd.Context())
