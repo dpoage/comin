@@ -198,8 +198,9 @@ func (m *Manager) alreadyRunning(g *protobuf.Generation, obs lease.Observation) 
 // admitQueued), so a change while the generation is queued still stops
 // it, and when the deferred generation is offered. With the lease reader
 // disabled (overrideLeaseFile is null) it always admits: the decisions are
-// be6025e's. A refused main generation is deferred (offerDeferred); a
-// refused testing generation is dropped.
+// be6025e's. A refused main generation is deferred (offerDeferred), unless
+// a deferred one was evaluated after it; a refused testing generation is
+// dropped.
 //   - C1: while a lease exists no main generation deploys.
 //   - After an override ended and before C3 recorded its release, nothing
 //     deploys: the ended override's head must be released before any
@@ -234,30 +235,30 @@ func (m *Manager) leaseDeployDecision(g *protobuf.Generation) (operation string,
 	if !isTestingGeneration(g) {
 		if obs.Exists {
 			logrus.Infof("manager: deferring the main generation %s: an override lease is held", g.Uuid)
-			m.setDeferred(g)
+			m.setDeferred(g, g)
 			return operation, false
 		}
 		if m.releasePending(obs) {
 			logrus.Infof("manager: deferring the main generation %s: the ended override is not released yet", g.Uuid)
-			m.setDeferred(g)
+			m.setDeferred(g, g)
 			return operation, false
 		}
 		if owned, reason := m.ownsRunningSystem(obs, g); !owned {
 			logrus.Infof("manager: deferring the main generation %s: %s", g.Uuid, reason)
-			m.setDeferred(g)
+			m.setDeferred(g, g)
 			return operation, false
 		}
 		if from := m.rolledBackFrom(obs); from != nil && (from.Generation.GetSelectedCommitId() == g.GetSelectedCommitId() || from.Generation.GetOutPath() == g.GetOutPath()) {
 			logrus.Infof("manager: skipping the main generation %s (commit %s, system %s): the running system is an older deployment of comin's, rolled back from the deployment %s of the commit %s and the system %s", g.Uuid, g.SelectedCommitId, g.OutPath, from.Uuid, from.Generation.SelectedCommitId, from.Generation.OutPath)
-			m.setDeferred(nil)
+			m.setDeferred(g, nil)
 			return operation, false
 		}
 		if m.alreadyRunning(g, obs) {
 			logrus.Infof("manager: skipping the main generation %s: its commit %s is already running", g.Uuid, g.SelectedCommitId)
-			m.setDeferred(nil)
+			m.setDeferred(g, nil)
 			return operation, false
 		}
-		m.setDeferred(nil)
+		m.setDeferred(g, nil)
 		return operation, true
 	}
 
@@ -361,10 +362,23 @@ func (m *Manager) excludedTestingHeads() map[repository.TestingHead]bool {
 	return m.releasedHeads(m.storage.DeploymentList())
 }
 
-func (m *Manager) setDeferred(g *protobuf.Generation) {
+// setDeferred replaces the deferred generation with next (nil clears it),
+// unless the deferred one was evaluated after decided: an older decision
+// never erases a newer generation.
+func (m *Manager) setDeferred(decided, next *protobuf.Generation) {
 	m.deferredMu.Lock()
 	defer m.deferredMu.Unlock()
-	m.deferred = g
+	if m.deferred != nil && evalStartedAt(m.deferred).After(evalStartedAt(decided)) {
+		return
+	}
+	m.deferred = next
+}
+
+func evalStartedAt(g *protobuf.Generation) time.Time {
+	if ts := g.GetEvalStartedAt(); ts != nil {
+		return ts.AsTime()
+	}
+	return time.Time{}
 }
 
 func (m *Manager) peekDeferred() *protobuf.Generation {
