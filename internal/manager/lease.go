@@ -461,10 +461,19 @@ func (m *Manager) offerDeferred() {
 // is never S4 expected, and its head never deploys again. Nothing is
 // deployed: returning the machine to its tier is the operator's
 // `switch-latest`. Testing deployments made by a pre-fork comin carry no
-// lease-aware mark and are never released.
+// lease-aware mark and are never released. It waits while the
+// pre-deployment stage holds a testing generation, which the gate has yet
+// to decide on.
 func (m *Manager) releaseEndedOverrides() {
 	if !m.leaseReader.Enabled() || m.leaseReader.Observe().Exists || !m.deployer.Idle() {
 		return
+	}
+	if m.preDeploy != nil {
+		st := m.preDeploy.Status()
+		if (st.Running != nil && isTestingGeneration(st.Running.Generation)) ||
+			(st.Pending != nil && isTestingGeneration(st.Pending.Generation)) {
+			return
+		}
 	}
 	// The store can hold several rows of one deployment.
 	var release []string
