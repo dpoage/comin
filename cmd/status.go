@@ -45,7 +45,31 @@ func longStatus(status *pb.State) {
 	} else {
 		fmt.Printf("    No build available\n")
 	}
+	preDeployShow(status.PreDeploy)
 	deployer.Show(status.Deployer, "    ")
+}
+
+// preDeployShow prints nothing when no pre-deployment command runs or waits,
+// which is also what a daemon that predates the field reports.
+func preDeployShow(s *pb.PreDeploy) {
+	running, pending := s.GetRunning(), s.GetPending()
+	if running == nil && pending == nil {
+		return
+	}
+	fmt.Printf("  Pre-deploy\n")
+	if running != nil {
+		fmt.Printf("    Running pre-deployment command for %s since %s\n",
+			preDeployGeneration(running), humanize.Time(running.StartedAt.AsTime()))
+	}
+	if pending != nil {
+		fmt.Printf("    Waiting: %s\n", preDeployGeneration(pending))
+	}
+}
+
+func preDeployGeneration(e *pb.PreDeployEntry) string {
+	g := e.Generation
+	return fmt.Sprintf("generation %s (commit %s from %s/%s)",
+		g.GetUuid(), g.GetSelectedCommitId(), g.GetSelectedRemoteName(), g.GetSelectedBranchName())
 }
 
 func jsonStatus(status *pb.State) {

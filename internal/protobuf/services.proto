@@ -142,6 +142,7 @@ message State {
   Confirmer build_confirmer = 7;
   Confirmer deploy_confirmer = 8;
   Drift drift = 9;
+  PreDeploy pre_deploy = 10;
 }
 
 // Drift describes whether the host is currently running the deployment
@@ -225,4 +226,20 @@ message RepositoryStatus {
 message Store {
   repeated Deployment deployments = 1;
   repeated Generation generations = 2; 
+}
+
+// PreDeploy is the pre-deployment stage: the generation whose command runs
+// and the one waiting for it. It is always populated; a field is null when
+// nothing runs or waits, and both are null when no command is configured.
+message PreDeploy {
+  PreDeployEntry running = 1;
+  PreDeployEntry pending = 2;
+}
+
+// PreDeployEntry is a generation held by the pre-deployment stage.
+// started_at is null while the generation is pending.
+message PreDeployEntry {
+  Generation generation = 1;
+  string operation = 2;
+  google.protobuf.Timestamp started_at = 3;
 }
