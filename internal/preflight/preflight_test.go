@@ -1,6 +1,7 @@
 package preflight_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -12,8 +13,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nlewo/comin/internal/preflight"
+	"github.com/nlewo/comin/internal/protobuf"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func script(t *testing.T, body string, mode os.FileMode) string {
@@ -273,16 +277,71 @@ func TestAskReasonIsFirstStdoutLine(t *testing.T) {
 			t.Fatalf("Ask took %s", d)
 		}
 	})
-	t.Run("cap backs off to a rune boundary", func(t *testing.T) {
+	t.Run("cap truncates at 4096 bytes", func(t *testing.T) {
 		data := filepath.Join(t.TempDir(), "line")
 		if err := os.WriteFile(data, []byte(strings.Repeat("€", 1500)+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		p := script(t, "cat "+data+"\nexit 3\n", 0o755)
 		v := preflight.Ask(context.Background(), preflight.Command{Path: p, Timeout: 10 * time.Second}, nil)
-		want := strings.Repeat("€", 1365)
+		want := strings.Repeat("€", 1365) + "\uFFFD"
 		if v.Admitted || v.Reason != want {
 			t.Fatalf("got admitted=%v len=%d, want len=%d", v.Admitted, len(v.Reason), len(want))
+		}
+	})
+}
+
+// A first line that is not valid UTF-8 still yields a Reason derived from it,
+// sanitized so it can travel as a proto3 string.
+func TestAskReasonIsValidUTF8(t *testing.T) {
+	run := func(body string) preflight.Verdict {
+		p := script(t, body, 0o755)
+		return preflight.Ask(context.Background(), preflight.Command{Path: p, Timeout: 10 * time.Second}, nil)
+	}
+	invalidLine := func(t *testing.T) string {
+		t.Helper()
+		data := filepath.Join(t.TempDir(), "line")
+		if err := os.WriteFile(data, append(bytes.Repeat([]byte{0xFF}, 5000), '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		v := run("cat " + data + "\nexit 3\n")
+		if v.Admitted {
+			t.Fatalf("admitted: %+v", v)
+		}
+		return v.Reason
+	}
+
+	t.Run("invalid bytes still yield the child's line", func(t *testing.T) {
+		reason := invalidLine(t)
+		if reason == "" || !utf8.ValidString(reason) {
+			t.Fatalf("Reason = %q, want non-empty valid UTF-8", reason)
+		}
+		if strings.HasPrefix(reason, "preflight: ") {
+			t.Fatalf("Reason replaced by comin line: %q", reason)
+		}
+		if strings.Trim(reason, "\uFFFD") != "" {
+			t.Fatalf("Reason = %q, want only replacement runes from the 0xFF line", reason)
+		}
+	})
+
+	t.Run("rune split across writes", func(t *testing.T) {
+		p := script(t, "head -c 4095 /dev/zero | tr '\\0' x\nprintf '\\342'\nsleep 0.2\nprintf '\\202\\254 tail\\n'\nexit 3\n", 0o755)
+		v := preflight.Ask(context.Background(), preflight.Command{Path: p, Timeout: 10 * time.Second}, nil)
+		if v.Admitted {
+			t.Fatalf("admitted: %+v", v)
+		}
+		if !utf8.ValidString(v.Reason) {
+			t.Fatalf("Reason is not valid UTF-8: %q", v.Reason)
+		}
+		if strings.TrimRight(v.Reason, "\uFFFD") != strings.Repeat("x", 4095) {
+			t.Fatalf("Reason = %q, want 4095 x's then a replacement rune", v.Reason)
+		}
+	})
+
+	t.Run("protojson round-trip", func(t *testing.T) {
+		reason := invalidLine(t)
+		if _, err := protojson.Marshal(&protobuf.Deployment{ErrorMsg: reason}); err != nil {
+			t.Fatalf("protojson.Marshal: %v", err)
 		}
 	})
 }

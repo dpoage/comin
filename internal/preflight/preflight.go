@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sirupsen/logrus"
 )
@@ -39,8 +39,9 @@ type Verdict struct {
 // Ask owns the child's process group: whatever the verdict, it kills the
 // whole group before returning, and returns within c.Timeout + 5s even when
 // a grandchild keeps stdout open (a setsid grandchild that left the group is
-// no longer a member). Reason is the child's first stdout line, capped at
-// 4096 bytes on a UTF-8 rune boundary, or, when there is none, a
+// no longer a member). Reason is the child's first stdout line truncated to
+// its first 4096 bytes, then strings.ToValidUTF8 with U+FFFD (Reason travels
+// as a proto3 string), or, when there is none, a
 // "preflight: " line naming the leader's real cause: exit status N or signal
 // S when the leader exited before the timer fired or ctx ended, else the
 // timeout or ctx end. Timeout <= 0 with a non-empty Path panics.
@@ -156,18 +157,11 @@ func (f *firstLine) Write(p []byte) (int, error) {
 	}
 	if room := maxReasonSize - len(f.buf); len(chunk) > room {
 		chunk = chunk[:room]
-		// Back the cap off so it never splits a UTF-8 rune.
-		for len(chunk) > 0 {
-			if r, size := utf8.DecodeLastRune(chunk); r != utf8.RuneError || size != 1 {
-				break
-			}
-			chunk = chunk[:len(chunk)-1]
-		}
 	}
 	f.buf = append(f.buf, chunk...)
 	return len(p), nil
 }
 
 func (f *firstLine) line() string {
-	return string(bytes.TrimRight(f.buf, "\r"))
+	return strings.ToValidUTF8(string(bytes.TrimRight(f.buf, "\r")), "\uFFFD")
 }
