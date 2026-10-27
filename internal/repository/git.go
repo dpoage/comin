@@ -96,22 +96,6 @@ func getHeadFromRemoteAndBranch(r repository, remoteName, branchName, currentMai
 	return *head, commitObject.Message, nil
 }
 
-func hardReset(r repository, newHead plumbing.Hash) error {
-	var w *git.Worktree
-	w, err := r.Repository.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get the worktree")
-	}
-	err = w.Checkout(&git.CheckoutOptions{
-		Hash:  newHead,
-		Force: true,
-	})
-	if err != nil {
-		return fmt.Errorf("git reset --hard %s fails: '%s'", newHead, err)
-	}
-	return nil
-}
-
 // fetch fetches the config.Remote
 func fetch(r repository, remote types.Remote) (err error) {
 	logrus.Debugf("Fetching remote '%s'", remote.Name)
@@ -223,17 +207,15 @@ func manageRemote(r *git.Repository, remote types.Remote) error {
 	return nil
 }
 
-func headSignedBy(r *git.Repository, publicKeys []string) (signedBy *openpgp.Entity, err error) {
-	head, _ := r.Head()
-	if head == nil {
-		return nil, fmt.Errorf("repository HEAD should not be nil")
-	}
-	signedBy, err = commitSignedBy(r, head.Hash(), publicKeys)
+// selectedCommitSignedBy returns the entity that signed the selected
+// commit with one of publicKeys. It is an error when no key signed it.
+func selectedCommitSignedBy(r *git.Repository, commitId plumbing.Hash, publicKeys []string) (signedBy *openpgp.Entity, err error) {
+	signedBy, err = commitSignedBy(r, commitId, publicKeys)
 	if err != nil {
 		return nil, err
 	}
 	if signedBy == nil {
-		return nil, fmt.Errorf("commit %s is not signed", head.Hash())
+		return nil, fmt.Errorf("commit %s is not signed", commitId)
 	}
 	return signedBy, nil
 }
