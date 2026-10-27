@@ -16,51 +16,46 @@ import (
 	"github.com/nlewo/comin/internal/store"
 	"github.com/nlewo/comin/internal/utils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-type switchLatestCall struct{ outPath, operation string }
-
-func newSwitchLatestManager(t *testing.T, calls chan switchLatestCall) (*Manager, *store.Store) {
+func newSwitchLatestManager(t *testing.T) (*Manager, *store.Store, *utils.RepositoryMock) {
 	t.Helper()
 	tmp := t.TempDir()
 	bk := broker.New()
 	bk.Start()
 	s, err := store.New(bk, tmp+"/state.json", tmp+"/gcroots", 10, 10)
 	assert.NoError(t, err)
-	f := fetcher.NewFetcher(utils.NewRepositoryMock())
+	r := utils.NewRepositoryMock()
+	f := fetcher.NewFetcher(r)
 	b := builder.New(s, NewExecutorMock(""), "repoPath", "", "", "my-machine", 2*time.Second, 2*time.Second)
-	d := deployer.New(s, func(_ context.Context, outPath, operation string) (bool, string, error) {
-		calls <- switchLatestCall{outPath, operation}
+	d := deployer.New(s, func(_ context.Context, _, _ string) (bool, string, error) {
+		t.Error("switch-latest must not deploy by itself")
 		return false, "", nil
 	}, nil, "")
 	d.Run(t.Context())
-	e := NewExecutorMock("")
 	bc := NewConfirmer(bk, Without, 0, "")
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations, preflight.Command{})
-	return m, s
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", NewExecutorMock(""), bc, dc, bk, emptyConfigurationOperations, preflight.Command{})
+	return m, s, r
 }
 
-func TestSwitchDeploymentLatestWithoutPreviousDeployment(t *testing.T) {
-	m, _ := newSwitchLatestManager(t, make(chan switchLatestCall, 1))
-	assert.EqualError(t, m.SwitchDeploymentLatest(), "manager: no previous deployment")
+func TestSwitchDeploymentLatestErrorsWithoutACandidate(t *testing.T) {
+	m, s, _ := newSwitchLatestManager(t)
+	// A stored deployment is not a candidate: only the repository is.
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "last", Operation: "switch", Generation: &protobuf.Generation{Uuid: "g", OutPath: "/out/last"}})
+	assert.EqualError(t, m.SwitchDeploymentLatest(), "manager: no candidate")
 }
 
-// switch-latest re-deploys the last deployment's generation with "switch", whatever its operation was.
-func TestSwitchDeploymentLatestDeploysTheLastDeploymentWithSwitch(t *testing.T) {
-	calls := make(chan switchLatestCall, 1)
-	m, s := newSwitchLatestManager(t, calls)
-	s.DeploymentInsert(&protobuf.Deployment{Uuid: "older", Operation: "test", Generation: &protobuf.Generation{Uuid: "g-older", OutPath: "/out/older"}})
-	s.DeploymentInsert(&protobuf.Deployment{Uuid: "last", Operation: "test", Generation: &protobuf.Generation{Uuid: "g-last", OutPath: "/out/last"}})
+func TestSwitchDeploymentLatestReturnsNilWithACandidate(t *testing.T) {
+	m, _, r := newSwitchLatestManager(t)
+	m.Fetcher.Start(t.Context())
+	m.Fetcher.TriggerFetch([]string{"remote"})
+	r.RsCh <- rsAtMain("id-1")
+	require.Eventually(t, func() bool { return m.Fetcher.Latest() != nil }, 5*time.Second, 50*time.Millisecond)
 
 	assert.NoError(t, m.SwitchDeploymentLatest())
-
-	select {
-	case c := <-calls:
-		assert.Equal(t, switchLatestCall{"/out/last", "switch"}, c)
-	case <-time.After(5 * time.Second):
-		t.Fatal("the last deployment's generation was not deployed")
-	}
+	assert.Nil(t, m.deployer.State().Deployment, "switch-latest does not deploy by itself")
 }

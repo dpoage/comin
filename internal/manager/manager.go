@@ -22,9 +22,11 @@ import (
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/reconcile"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/scheduler"
 	"github.com/nlewo/comin/internal/store"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -76,12 +78,13 @@ type Manager struct {
 	cacheSeq int
 
 	// mu guards the fields below.
-	mu              sync.Mutex
-	buildPending    string
-	deployPending   string
-	deployConfirmed string
-	inFlight        *submission
-	lastActivation  *reconcile.Activation
+	mu                sync.Mutex
+	buildPending      string
+	deployPending     string
+	deployConfirmed   string
+	inFlight          *submission
+	lastActivation    *reconcile.Activation
+	reconcileSnapshot statusSnapshot
 }
 
 func New(s *store.Store,
@@ -121,7 +124,11 @@ func New(s *store.Store,
 		wakeCh:                  make(chan struct{}, 1),
 		triggerCh:               make(chan string, 1),
 		cache:                   map[genKey]*cached{},
+		reconcileSnapshot: statusSnapshot{
+			status: reconcile.Status{State: reconcile.StateWaiting, Reason: "no candidate"},
+		},
 	}
+	m.reconcileSnapshot.since = m.startedAt
 	return m
 }
 
@@ -131,6 +138,32 @@ func (m *Manager) GetState() *protobuf.State {
 }
 
 func (m *Manager) toState() *protobuf.State {
+	m.mu.Lock()
+	snap := m.reconcileSnapshot
+	m.mu.Unlock()
+	rc := &protobuf.Reconcile{
+		State:   snap.status.State,
+		Current: snap.current,
+		Reason:  snap.status.Reason,
+		Since:   timestamppb.New(snap.since),
+	}
+	for _, c := range snap.status.Candidates {
+		rc.Candidates = append(rc.Candidates, &protobuf.ReconcileCandidate{
+			Branch:  c.Branch,
+			Kind:    c.Kind,
+			Commit:  c.Commit,
+			OutPath: c.OutPath,
+			Outcome: c.Outcome,
+			Reason:  c.Reason,
+		})
+	}
+	if snap.status.Desired != nil {
+		rc.Desired = &protobuf.ReconcileTarget{
+			Commit:  snap.status.Desired.Commit,
+			Branch:  snap.status.Desired.Branch,
+			OutPath: snap.status.Desired.OutPath,
+		}
+	}
 	return &protobuf.State{
 		NeedToReboot:    wrapperspb.Bool(m.needToReboot),
 		IsSuspended:     wrapperspb.Bool(m.isSuspended.Load()),
@@ -140,15 +173,22 @@ func (m *Manager) toState() *protobuf.State {
 		Store:           m.storage.GetState(),
 		BuildConfirmer:  m.BuildConfirmer.status(),
 		DeployConfirmer: m.DeployConfirmer.status(),
+		Reconcile:       rc,
 	}
 }
 
+// SwitchDeploymentLatest reconciles now: the passes that serve the request
+// carry the manual trigger on their asks. It fails only when the repository
+// offers no candidate, and returns without waiting for any deployment.
 func (m *Manager) SwitchDeploymentLatest() error {
-	ok, latest := m.storage.LastDeployment()
-	if !ok {
-		return fmt.Errorf("manager: no previous deployment")
+	if len(repository.Candidates(m.Fetcher.Latest())) == 0 {
+		return fmt.Errorf("manager: no candidate")
 	}
-	m.deployer.Submit(latest.Generation, "switch")
+	select {
+	case m.triggerCh <- reconcile.TriggerManual:
+	default:
+		// A request is already waiting for its decisive pass.
+	}
 	return nil
 }
 

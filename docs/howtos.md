@@ -112,7 +112,10 @@ every candidate is admitted.
 
 A candidate whose latest finished deployment of the same system failed
 is not deployed again automatically, except once after a comin restart
-interrupted it; `comin switch-latest` still deploys it on request.
+interrupted it. `comin deployment switch-latest` reconciles now: the
+preflight asks of the pass it starts carry `COMIN_TRIGGER=manual`, and it
+retries such a candidate once. It fails when the repository offers no
+candidate.
 
 **Fork behaviour**: when `services.comin.preflightCommand` is `null`,
 comin reverts a change made outside of comin (`nixos-rebuild`, a

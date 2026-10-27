@@ -26,6 +26,7 @@ func longStatus(status *pb.State) {
 	if status.IsSuspended.GetValue() {
 		fmt.Printf("  Is suspended: yes\n")
 	}
+	showReconcile(status.Reconcile)
 	fmt.Printf("  Fetcher\n")
 	if status.Fetcher.RepositoryStatus != nil && status.Fetcher.RepositoryStatus.SelectedCommitShouldBeSigned.GetValue() {
 		if status.Fetcher.RepositoryStatus.SelectedCommitSigned.GetValue() {
@@ -46,6 +47,29 @@ func longStatus(status *pb.State) {
 		fmt.Printf("    No build available\n")
 	}
 	deployer.Show(status.Deployer, "    ")
+}
+
+func showReconcile(rc *pb.Reconcile) {
+	if rc == nil {
+		return
+	}
+	fmt.Printf("  Reconcile\n")
+	if rc.Since != nil {
+		fmt.Printf("    State %s since %s\n", rc.State, humanize.Time(rc.Since.AsTime()))
+	} else {
+		fmt.Printf("    State %s\n", rc.State)
+	}
+	if rc.Reason != "" {
+		fmt.Printf("    Reason %s\n", rc.Reason)
+	}
+	if rc.Desired != nil {
+		fmt.Printf("    Desired commit %s on %s (%s)\n", rc.Desired.Commit, rc.Desired.Branch, rc.Desired.OutPath)
+	} else {
+		fmt.Printf("    Desired none\n")
+	}
+	if rc.Current != "" {
+		fmt.Printf("    Current system %s\n", rc.Current)
+	}
 }
 
 func jsonStatus(status *pb.State) {
@@ -98,6 +122,13 @@ func onelineStatus(status *pb.State) {
 		case store.StatusToString(store.Done):
 			fmt.Printf(" %s/%s (%s)", status.Deployer.Deployment.Generation.SelectedRemoteName, status.Deployer.Deployment.Generation.SelectedBranchName,
 				humanize.Time(status.Deployer.Deployment.EndedAt.AsTime()))
+		}
+	}
+	if rc := status.Reconcile; rc != nil {
+		if rc.Reason != "" {
+			fmt.Printf(" %s: %s", rc.State, rc.Reason)
+		} else {
+			fmt.Printf(" %s", rc.State)
 		}
 	}
 	if status.NeedToReboot.GetValue() {

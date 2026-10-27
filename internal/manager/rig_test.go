@@ -53,6 +53,8 @@ type fakeExec struct {
 	// buildDelay is how long a build takes unless cancelled; builds counts the started ones.
 	buildDelay time.Duration
 	builds     int
+	// deployDelay holds each deployment in flight once submitted.
+	deployDelay time.Duration
 }
 
 func (e *fakeExec) Eval(_ context.Context, _, _, commitId, _, _ string) (string, string, string, error) {
@@ -83,16 +85,22 @@ func (e *fakeExec) buildCount() int {
 
 func (e *fakeExec) Deploy(_ context.Context, out, operation string) (bool, string, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.deploys = append(e.deploys, deployCall{out: out, operation: operation, asks: countLines(e.askLog)})
-	if e.failDeploy {
-		if e.failMoves {
+	fail, moves, restart, delay := e.failDeploy, e.failMoves, e.restart, e.deployDelay
+	e.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if fail {
+		if moves {
 			e.setCurrentLocked(out)
 		}
-		return e.restart, "", errors.New("switch failed")
+		return restart, "", errors.New("switch failed")
 	}
 	e.setCurrentLocked(out)
-	return e.restart, "profile", nil
+	return restart, "profile", nil
 }
 
 func (e *fakeExec) NeedToReboot(_, _ string) bool {
@@ -228,6 +236,7 @@ if [ -e "$d/slow" ]; then
 fi
 v=$(cat "$d/verdict-$COMIN_BRANCH" 2>/dev/null)
 if [ "$v" = refuse ]; then echo "refused: $COMIN_BRANCH"; exit 1; fi
+if [ "$v" = manual ] && [ "$COMIN_TRIGGER" != manual ]; then echo "refused: $COMIN_BRANCH"; exit 1; fi
 exit 0
 `, r.scriptDir)
 	require.NoError(r.t, os.WriteFile(filepath.Join(r.scriptDir, "preflight.sh"), []byte(body), 0o755))

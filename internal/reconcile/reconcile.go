@@ -12,6 +12,21 @@ import (
 	"github.com/nlewo/comin/internal/store"
 )
 
+// Trigger values of the COMIN_TRIGGER ask environment: a pass started by
+// switch-latest asks with manual, every other pass with poll.
+const (
+	TriggerPoll   = "poll"
+	TriggerManual = "manual"
+)
+
+// State values of Status.State.
+const (
+	StateConverged = "converged"
+	StateWaiting   = "waiting"
+	StateDeploying = "deploying"
+	StateFailed    = "failed"
+)
+
 // Stage is how far the generation of a candidate has progressed.
 type Stage int
 
@@ -56,6 +71,49 @@ type Activation struct {
 	Verdict preflight.Verdict
 }
 
+// Target is the candidate a Status row names: Commit, its real Branch name
+// and OutPath, empty when it has none.
+type Target struct {
+	Commit  string
+	Branch  string
+	OutPath string
+}
+
+// Status labels the outcome of a pass: State is one of the State values,
+// Desired is nil unless the row names a candidate, and Reason is the
+// comin-authored or verbatim preflight line of the row. Candidates is the
+// walk the pass ran, in preference order.
+type Status struct {
+	State      string
+	Desired    *Target
+	Reason     string
+	Candidates []CandidateStatus
+}
+
+// CandidateStatus is one entry of the walk a status reports.
+type CandidateStatus struct {
+	Branch  string
+	Kind    string
+	Commit  string
+	OutPath string
+	Outcome string
+	Reason  string
+}
+
+// Outcome values of CandidateStatus.Outcome.
+const (
+	OutcomeAdmitted = "admitted"
+	OutcomeRefused  = "refused"
+	OutcomeFailed   = "failed"
+	OutcomePending  = "pending"
+	OutcomeSkipped  = "skipped"
+)
+
+// TargetOf returns the status target of a candidate.
+func TargetOf(c Candidate) Target {
+	return Target{Commit: c.CommitId, Branch: c.Branch, OutPath: c.OutPath}
+}
+
 // Observation is everything one pass knows. Candidates are in preference order.
 type Observation struct {
 	Candidates []Candidate
@@ -64,9 +122,11 @@ type Observation struct {
 	CurrentErr string
 	// Deployments are the stored deployments in any order.
 	Deployments []*protobuf.Deployment
-	// InFlight: a deployment is submitted or running.
-	InFlight  bool
-	Suspended bool
+	// InFlight: a deployment is submitted or running. InFlightTarget is
+	// its candidate; nil when InFlight is false.
+	InFlight       bool
+	InFlightTarget *Target
+	Suspended      bool
 	// ProcessStartedAt is when this comin process started: a finished
 	// failure older than it is retried once.
 	ProcessStartedAt time.Time
@@ -100,54 +160,194 @@ type Decision struct {
 	Action  Action
 	Target  int
 	Desired int
+	// Status labels the pass this decision ends.
+	Status Status
+	// Decisive reports whether this decision ends a pending manual
+	// request: a deployment was handed over, or the walk concluded.
+	Decisive bool
 }
-
-func wait(desired int) Decision { return Decision{Action: Wait, Target: -1, Desired: desired} }
 
 // Decide walks the candidates in order, passing failed and refused ones and
 // stopping at the first pending or admitted one. Nothing below the stop
 // point is evaluated, built or asked. An admitted candidate is deployed iff
 // no deployment is in flight, the running system is known and differs from
-// its out path, and failedLatest does not block its out path.
+// its out path, and failedLatest does not block its out path; a manual
+// pass retries a blocked out path once.
 func Decide(o Observation) Decision {
-	if o.Suspended {
-		return wait(-1)
+	d := decide(o)
+	if o.InFlight {
+		// A deployment in flight is the first status row, whatever the
+		// walk is preparing next.
+		d.Status.State = StateDeploying
+		d.Status.Desired = o.InFlightTarget
+		d.Status.Reason = ""
 	}
-	for i, c := range o.Candidates {
-		switch outcome(c, o.AsksRun) {
-		case failed, refused:
-			continue
-		case needsEval:
-			return Decision{Action: Eval, Target: i, Desired: -1}
-		case needsBuildSubmit:
-			return Decision{Action: SubmitBuild, Target: i, Desired: -1}
-		case pending:
-			return wait(-1)
+	return d
+}
+
+func decide(o Observation) Decision {
+	if o.Suspended {
+		return waiting(-1, Status{State: StateWaiting, Reason: "suspended"})
+	}
+	var firstFailed, firstRefused *Candidate
+	var entries []CandidateStatus
+	for i := range o.Candidates {
+		c := &o.Candidates[i]
+		switch outcome(*c, o.AsksRun) {
+		case failed:
+			if firstFailed == nil {
+				firstFailed = c
+			}
+			entries = append(entries, entry(*c, OutcomeFailed, failedReason(*c)))
+		case refused:
+			if firstRefused == nil {
+				firstRefused = c
+			}
+			entries = append(entries, entry(*c, OutcomeRefused, c.Verdict.Reason))
+		case needsEval, needsBuildSubmit, pending:
+			st := pendingStatus(*c)
+			st.Candidates = appendStopped(entries, entry(*c, OutcomePending, st.Reason), o.Candidates[i+1:])
+			switch outcome(*c, o.AsksRun) {
+			case needsEval:
+				return Decision{Action: Eval, Target: i, Desired: -1, Status: st}
+			case needsBuildSubmit:
+				return Decision{Action: SubmitBuild, Target: i, Desired: -1, Status: st}
+			}
+			return waiting(-1, st)
 		case unasked:
 			if o.InFlight {
-				return wait(-1)
+				st := pendingStatus(*c)
+				st.Reason = ""
+				st.Candidates = appendStopped(entries, entry(*c, OutcomePending, ""), o.Candidates[i+1:])
+				return waiting(-1, st)
 			}
 			return Decision{Action: Ask, Target: i, Desired: -1}
 		case admitted:
-			return deploy(o, i)
+			d := deploy(o, i)
+			if d.Action == Eval {
+				// Its out path vanished: the candidate is evaluated
+				// again before its verdict is used.
+				st := pendingStatus(*c)
+				st.Candidates = appendStopped(entries, entry(*c, OutcomePending, st.Reason), o.Candidates[i+1:])
+				d.Status = st
+				return d
+			}
+			entries = appendStopped(entries, entry(*c, OutcomeAdmitted, ""), o.Candidates[i+1:])
+			d.Status.Candidates = entries
+			return d
 		}
 	}
-	return wait(-1)
+	switch {
+	case firstFailed != nil:
+		return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(failedStatus(*firstFailed), entries), Decisive: true}
+	case firstRefused != nil:
+		return waiting(-1, withCandidates(Status{State: StateWaiting, Reason: firstRefused.Verdict.Reason}, entries))
+	}
+	return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(Status{State: StateWaiting, Reason: "no candidate"}, entries), Decisive: true}
+}
+
+// entry builds the walk entry of c.
+func entry(c Candidate, result, reason string) CandidateStatus {
+	kind := "main"
+	if c.Testing {
+		kind = "testing"
+	}
+	return CandidateStatus{Branch: c.Branch, Kind: kind, Commit: c.CommitId, OutPath: c.OutPath, Outcome: result, Reason: reason}
+}
+
+// appendStopped ends a walk stopped at stop: everything below is skipped.
+func appendStopped(entries []CandidateStatus, stop CandidateStatus, rest []Candidate) []CandidateStatus {
+	entries = append(entries, stop)
+	for _, c := range rest {
+		entries = append(entries, entry(c, OutcomeSkipped, ""))
+	}
+	return entries
+}
+
+func withCandidates(st Status, entries []CandidateStatus) Status {
+	st.Candidates = entries
+	return st
+}
+
+func wait(desired int) Decision {
+	return Decision{Action: Wait, Target: -1, Desired: desired}
+}
+
+func waiting(desired int, st Status) Decision {
+	return Decision{Action: Wait, Target: -1, Desired: desired, Status: st}
+}
+
+// pendingStatus labels a walk stopped at a candidate that cannot be asked
+// yet, or that is evaluated again after its out path vanished.
+func pendingStatus(c Candidate) Status {
+	return Status{State: StateWaiting, Reason: pendingReason(c)}
+}
+
+func pendingReason(c Candidate) string {
+	switch c.Stage {
+	case AwaitingBuild:
+		return "awaiting build confirmation " + c.CommitId
+	case Building:
+		return "building " + c.CommitId
+	}
+	return "evaluating " + c.CommitId
+}
+
+// failedStatus labels the first failed candidate of an exhausted walk.
+func failedStatus(c Candidate) Status {
+	t := TargetOf(c)
+	return Status{State: StateFailed, Desired: &t, Reason: failedReason(c)}
+}
+
+func failedReason(c Candidate) string {
+	switch c.Stage {
+	case EvalFailed:
+		return withErr("eval failed "+c.CommitId, c.Err)
+	case BuildFailed:
+		return withErr("build failed "+c.CommitId, c.Err)
+	case MachineIdMismatch:
+		return "machine-id mismatch " + c.CommitId
+	}
+	return "unsigned commit " + c.CommitId
+}
+
+func withErr(s, err string) string {
+	if err == "" {
+		return s
+	}
+	return s + ": " + err
 }
 
 func deploy(o Observation, i int) Decision {
 	d := o.Candidates[i]
+	t := TargetOf(d)
+	last, blocked := failedLatest(o.Deployments, d.OutPath, o.ProcessStartedAt)
+	// A manual pass retries a blocked out path once; poll passes never do.
+	blocked = blocked && o.Trigger != TriggerManual
 	switch {
-	case o.InFlight, o.Current == "", o.Current == d.OutPath, failedLatest(o.Deployments, d.OutPath, o.ProcessStartedAt):
+	case o.InFlight:
 		return wait(i)
+	case o.Current == "":
+		return waiting(i, Status{State: StateWaiting, Desired: &t, Reason: "current system unknown: " + o.CurrentErr})
+	case o.Current == d.OutPath:
+		return Decision{Action: Wait, Target: -1, Desired: i, Status: Status{State: StateConverged, Desired: &t}, Decisive: true}
+	case blocked:
+		return Decision{Action: Wait, Target: -1, Desired: i,
+			Status:   Status{State: StateFailed, Desired: &t, Reason: withErr("deploy failed "+d.CommitId, last.ErrorMsg)},
+			Decisive: true}
 	case !d.Realized:
-		return Decision{Action: Eval, Target: i, Desired: -1}
-	case o.DeployConfirm.Confirmed == d.GenerationUuid:
-		return Decision{Action: Deploy, Target: i, Desired: i}
+		return Decision{Action: Eval, Target: i, Desired: -1, Status: pendingStatus(d)}
 	case o.DeployConfirm.Pending == d.GenerationUuid:
-		return wait(i)
+		return waiting(i, Status{State: StateWaiting, Desired: &t, Reason: "awaiting deploy confirmation " + d.CommitId})
 	}
-	return Decision{Action: SubmitDeploy, Target: i, Desired: i}
+	st := Status{State: StateDeploying, Desired: &t}
+	if a := o.LastActivation; a != nil && a.OutPath == d.OutPath && !a.Verdict.Admitted {
+		st = Status{State: StateWaiting, Desired: &t, Reason: a.Verdict.Reason}
+	}
+	if o.DeployConfirm.Confirmed == d.GenerationUuid {
+		return Decision{Action: Deploy, Target: i, Desired: i, Status: st, Decisive: true}
+	}
+	return Decision{Action: SubmitDeploy, Target: i, Desired: i, Status: st}
 }
 
 type result int
@@ -193,11 +393,11 @@ func outcome(c Candidate, asksRun bool) result {
 	return refused
 }
 
-// failedLatest reports whether outPath is blocked: its last finished deployment
-// failed, in this process or with the finished one before it failed too: a lone
-// failure from before the process started is retried once after the restart.
-func failedLatest(deployments []*protobuf.Deployment, outPath string, startedAt time.Time) bool {
-	var last, prev *protobuf.Deployment
+// failedLatest returns the last finished deployment of outPath and whether
+// it blocks outPath: it failed in this process, or the finished one before
+// it failed too, so a lone pre-start failure is retried once.
+func failedLatest(deployments []*protobuf.Deployment, outPath string, startedAt time.Time) (last *protobuf.Deployment, blocked bool) {
+	var prev *protobuf.Deployment
 	for _, d := range deployments {
 		if d.Generation.GetOutPath() != outPath {
 			continue
@@ -218,7 +418,7 @@ func failedLatest(deployments []*protobuf.Deployment, outPath string, startedAt 
 		}
 	}
 	if last == nil || last.Status != store.StatusToString(store.Failed) {
-		return false
+		return last, false
 	}
-	return !last.EndedAt.AsTime().Before(startedAt) || (prev != nil && prev.Status == store.StatusToString(store.Failed))
+	return last, !last.EndedAt.AsTime().Before(startedAt) || (prev != nil && prev.Status == store.StatusToString(store.Failed))
 }

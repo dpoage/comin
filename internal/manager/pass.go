@@ -14,11 +14,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	triggerPoll = "poll"
-	// maxCached bounds the generation cache; the oldest entries go first.
-	maxCached = 256
-)
+// maxCached bounds the generation cache; the oldest entries go first.
+const maxCached = 256
 
 // genKey identifies the generation of a candidate: at most one is evaluated
 // per commit and testing flag.
@@ -40,8 +37,16 @@ type cached struct {
 // submission is the deployment handed to the deployer and not yet finished.
 type submission struct {
 	uuid    string
-	outPath string
+	target  reconcile.Target
 	trigger string
+}
+
+// statusSnapshot is the last pass's status with the running system it was
+// computed against and when its state value was first observed.
+type statusSnapshot struct {
+	status  reconcile.Status
+	current string
+	since   time.Time
 }
 
 func (m *Manager) wake() {
@@ -71,19 +76,35 @@ func (m *Manager) abandoned(g *protobuf.Generation) {
 }
 
 // reconcileLoop runs a pass at start, then on every wake, trigger and tick.
+// A manual request outlives the pass that reads it: passes carry the
+// manual trigger until one reaches a decision, so a request made while a
+// deployment is in flight or the walk is pending is served by the first
+// decisive pass.
 func (m *Manager) reconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(m.tick)
 	defer ticker.Stop()
-	trigger := triggerPoll
+	manual := false
 	for {
-		m.pass(ctx, trigger)
-		trigger = triggerPoll
+		trigger := reconcile.TriggerPoll
+		if manual {
+			trigger = reconcile.TriggerManual
+		}
+		d := m.pass(ctx, trigger)
+		manual = manual && !d.Decisive
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		case <-m.wakeCh:
-		case trigger = <-m.triggerCh:
+		case <-m.triggerCh:
+			manual = true
+		}
+		// A request racing a wake or a tick must reach the next pass, not
+		// the one after it.
+		select {
+		case <-m.triggerCh:
+			manual = true
+		default:
 		}
 	}
 }
@@ -123,7 +144,7 @@ func (m *Manager) watch(ctx context.Context) {
 // pass decides and applies steps until one needs an external event. The
 // verdicts of its asks live for the pass only. A step holds passMu from
 // observe through apply; asks run without it.
-func (m *Manager) pass(ctx context.Context, trigger string) {
+func (m *Manager) pass(ctx context.Context, trigger string) reconcile.Decision {
 	verdicts := map[genKey]preflight.Verdict{}
 	for ctx.Err() == nil {
 		m.passMu.Lock()
@@ -131,8 +152,9 @@ func (m *Manager) pass(ctx context.Context, trigger string) {
 		d := reconcile.Decide(obs)
 		if d.Action != reconcile.Ask {
 			m.apply(ctx, obs, entries, d)
+			m.recordStatus(obs.Current, d.Status)
 			m.passMu.Unlock()
-			return
+			return d
 		}
 		m.passMu.Unlock()
 		c := obs.Candidates[d.Target]
@@ -140,6 +162,20 @@ func (m *Manager) pass(ctx context.Context, trigger string) {
 		logrus.Infof("manager: preflight for %s: admitted=%t %s", c.CommitId, v.Admitted, v.Reason)
 		verdicts[genKey{c.CommitId, c.Testing}] = v
 	}
+	return reconcile.Decision{}
+}
+
+// recordStatus keeps the last pass's status; since advances only when the
+// state value changed.
+func (m *Manager) recordStatus(current string, st reconcile.Status) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if st.State != m.reconcileSnapshot.status.State {
+		m.reconcileSnapshot = statusSnapshot{status: st, current: current, since: time.Now()}
+		return
+	}
+	m.reconcileSnapshot.status = st
+	m.reconcileSnapshot.current = current
 }
 
 // observe gathers one Observation. While suspended it walks no candidate,
@@ -147,10 +183,16 @@ func (m *Manager) pass(ctx context.Context, trigger string) {
 func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict) (reconcile.Observation, []*cached) {
 	current, currentErr := m.currentSystem()
 	m.mu.Lock()
+	var inFlightTarget *reconcile.Target
+	if m.inFlight != nil {
+		t := m.inFlight.target
+		inFlightTarget = &t
+	}
 	obs := reconcile.Observation{
 		Current:        current,
 		CurrentErr:     currentErr,
 		InFlight:       m.inFlight != nil,
+		InFlightTarget: inFlightTarget,
 		DeployConfirm:  reconcile.DeployConfirm{Pending: m.deployPending, Confirmed: m.deployConfirmed},
 		LastActivation: m.lastActivation,
 	}
@@ -259,7 +301,7 @@ func (m *Manager) apply(ctx context.Context, obs reconcile.Observation, entries 
 		m.DeployConfirmer.Submit(c.GenerationUuid)
 	case reconcile.Deploy:
 		m.mu.Lock()
-		m.inFlight = &submission{uuid: c.GenerationUuid, outPath: c.OutPath, trigger: obs.Trigger}
+		m.inFlight = &submission{uuid: c.GenerationUuid, target: reconcile.TargetOf(c), trigger: obs.Trigger}
 		m.deployConfirmed = ""
 		m.mu.Unlock()
 		m.deployer.Submit(proto.CloneOf(entries[d.Target].gen), m.operation(c.Candidate))
@@ -296,7 +338,7 @@ func (m *Manager) eval(ctx context.Context, c repository.Candidate) {
 // preActivation is the deployer's last check before an activation: the
 // generation must be realized and the preflight must admit it.
 func (m *Manager) preActivation(ctx context.Context, g *protobuf.Generation, operation string) bool {
-	trigger := triggerPoll
+	trigger := reconcile.TriggerPoll
 	m.mu.Lock()
 	if m.inFlight != nil {
 		trigger = m.inFlight.trigger

@@ -14,6 +14,15 @@
 - `services.comin.preflightTimeout`: seconds before comin kills the preflight
   run (its process group) and counts it as a refusal. Default: 60.
 - The configuration file keys `preflight_command` and `preflight_timeout`.
+- The `reconcile` object in the state `comin status` reports (JSON included):
+  `state` (`converged`, `waiting`, `deploying` or `failed`), `desired`
+  (commit, branch, out path), `current`, `reason` (the preflight line or
+  the comin line explaining the state), `since` (when this process first
+  observed the state value) and `candidates`, the current walk in
+  preference order with one entry per candidate: branch, kind
+  (`main`/`testing`), commit, out path, outcome (`admitted`, `refused`,
+  `failed`, `pending` or `skipped`) and reason. `comin status` and
+  `comin status --oneline` show the reconcile state and its reason.
 
 ### Removed
 
@@ -24,6 +33,13 @@
 
 ### Changed
 
+- `comin deployment switch-latest` reconciles now instead of re-deploying
+  the last deployment with the `switch` operation: comin runs a reconcile
+  pass at once, the preflight asks of the passes that serve the request
+  carry `COMIN_TRIGGER=manual`, and a candidate whose latest deployment of
+  the same out path failed is retried once. The command fails when the
+  repository offers no candidate and returns without waiting for any
+  deployment.
 - `branches.*.operation` accepts only `switch` or `test`. The NixOS module
   rejects every other value with a type error naming the option. The
   configuration file reader rejects every other value with an error naming the

@@ -35,7 +35,13 @@ var deploymentListCmd = &cobra.Command{
 }
 
 var deploymentSwitchLatestCmd = &cobra.Command{
-	Use:  "switch-latest",
+	Use:   "switch-latest",
+	Short: "Reconcile now, with the manual trigger on every preflight ask",
+	Long: `Reconcile now: comin runs a reconcile pass at once, and every preflight
+ask of the passes that serve this request carries COMIN_TRIGGER=manual. A
+candidate whose latest deployment of the same out path failed is retried
+once. The command fails when the repository offers no candidate; it returns
+without waiting for any deployment.`,
 	Args: cobra.MinimumNArgs(0),
 	Run: func(cmd *cobra.Command, args []string) {
 		opts := client.ClientOpts{

@@ -693,6 +693,7 @@ type State struct {
 	Store           *Store                 `protobuf:"bytes,6,opt,name=store" json:"store,omitempty"`
 	BuildConfirmer  *Confirmer             `protobuf:"bytes,7,opt,name=build_confirmer,json=buildConfirmer" json:"build_confirmer,omitempty"`
 	DeployConfirmer *Confirmer             `protobuf:"bytes,8,opt,name=deploy_confirmer,json=deployConfirmer" json:"deploy_confirmer,omitempty"`
+	Reconcile       *Reconcile             `protobuf:"bytes,10,opt,name=reconcile" json:"reconcile,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -783,6 +784,258 @@ func (x *State) GetDeployConfirmer() *Confirmer {
 	return nil
 }
 
+func (x *State) GetReconcile() *Reconcile {
+	if x != nil {
+		return x.Reconcile
+	}
+	return nil
+}
+
+// ReconcileTarget is the candidate a reconcile status names.
+type ReconcileTarget struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Commit string                 `protobuf:"bytes,1,opt,name=commit" json:"commit,omitempty"`
+	// branch is the real branch name, not main or testing
+	Branch        string `protobuf:"bytes,2,opt,name=branch" json:"branch,omitempty"`
+	OutPath       string `protobuf:"bytes,3,opt,name=out_path,json=outPath" json:"out_path,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReconcileTarget) Reset() {
+	*x = ReconcileTarget{}
+	mi := &file_internal_protobuf_services_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReconcileTarget) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReconcileTarget) ProtoMessage() {}
+
+func (x *ReconcileTarget) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_protobuf_services_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReconcileTarget.ProtoReflect.Descriptor instead.
+func (*ReconcileTarget) Descriptor() ([]byte, []int) {
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ReconcileTarget) GetCommit() string {
+	if x != nil {
+		return x.Commit
+	}
+	return ""
+}
+
+func (x *ReconcileTarget) GetBranch() string {
+	if x != nil {
+		return x.Branch
+	}
+	return ""
+}
+
+func (x *ReconcileTarget) GetOutPath() string {
+	if x != nil {
+		return x.OutPath
+	}
+	return ""
+}
+
+// ReconcileCandidate is one entry of the walk a reconcile status reports.
+type ReconcileCandidate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// branch is the real branch name, not main or testing
+	Branch string `protobuf:"bytes,1,opt,name=branch" json:"branch,omitempty"`
+	// kind is main or testing, the COMIN_BRANCH value of its asks
+	Kind   string `protobuf:"bytes,2,opt,name=kind" json:"kind,omitempty"`
+	Commit string `protobuf:"bytes,3,opt,name=commit" json:"commit,omitempty"`
+	// out_path is empty when the candidate was not evaluated
+	OutPath string `protobuf:"bytes,4,opt,name=out_path,json=outPath" json:"out_path,omitempty"`
+	// outcome is one of admitted, refused, failed, pending or skipped
+	Outcome string `protobuf:"bytes,5,opt,name=outcome" json:"outcome,omitempty"`
+	// reason is the preflight line of a refusal, comin's line of a failure
+	// or of pending progress; empty for admitted and skipped
+	Reason        string `protobuf:"bytes,6,opt,name=reason" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReconcileCandidate) Reset() {
+	*x = ReconcileCandidate{}
+	mi := &file_internal_protobuf_services_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReconcileCandidate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReconcileCandidate) ProtoMessage() {}
+
+func (x *ReconcileCandidate) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_protobuf_services_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReconcileCandidate.ProtoReflect.Descriptor instead.
+func (*ReconcileCandidate) Descriptor() ([]byte, []int) {
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ReconcileCandidate) GetBranch() string {
+	if x != nil {
+		return x.Branch
+	}
+	return ""
+}
+
+func (x *ReconcileCandidate) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *ReconcileCandidate) GetCommit() string {
+	if x != nil {
+		return x.Commit
+	}
+	return ""
+}
+
+func (x *ReconcileCandidate) GetOutPath() string {
+	if x != nil {
+		return x.OutPath
+	}
+	return ""
+}
+
+func (x *ReconcileCandidate) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
+	}
+	return ""
+}
+
+func (x *ReconcileCandidate) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// Reconcile is the convergence of the running system to the repository.
+type Reconcile struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// state is one of converged, waiting, deploying or failed
+	State string `protobuf:"bytes,1,opt,name=state" json:"state,omitempty"`
+	// desired is null when the state names no candidate
+	Desired *ReconcileTarget `protobuf:"bytes,2,opt,name=desired" json:"desired,omitempty"`
+	// current is empty when it cannot be read
+	Current string `protobuf:"bytes,3,opt,name=current" json:"current,omitempty"`
+	// reason is the comin or preflight line; empty when there is nothing to explain
+	Reason string `protobuf:"bytes,4,opt,name=reason" json:"reason,omitempty"`
+	// since is when this process first observed the state value
+	Since *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=since" json:"since,omitempty"`
+	// candidates is the current pass's walk, in preference order; empty
+	// while suspended or when there is no candidate
+	Candidates    []*ReconcileCandidate `protobuf:"bytes,6,rep,name=candidates" json:"candidates,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Reconcile) Reset() {
+	*x = Reconcile{}
+	mi := &file_internal_protobuf_services_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Reconcile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Reconcile) ProtoMessage() {}
+
+func (x *Reconcile) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_protobuf_services_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Reconcile.ProtoReflect.Descriptor instead.
+func (*Reconcile) Descriptor() ([]byte, []int) {
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *Reconcile) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *Reconcile) GetDesired() *ReconcileTarget {
+	if x != nil {
+		return x.Desired
+	}
+	return nil
+}
+
+func (x *Reconcile) GetCurrent() string {
+	if x != nil {
+		return x.Current
+	}
+	return ""
+}
+
+func (x *Reconcile) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *Reconcile) GetSince() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Since
+	}
+	return nil
+}
+
+func (x *Reconcile) GetCandidates() []*ReconcileCandidate {
+	if x != nil {
+		return x.Candidates
+	}
+	return nil
+}
+
 type Deployer struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	IsDeploying        *wrapperspb.BoolValue  `protobuf:"bytes,1,opt,name=is_deploying,json=isDeploying" json:"is_deploying,omitempty"`
@@ -797,7 +1050,7 @@ type Deployer struct {
 
 func (x *Deployer) Reset() {
 	*x = Deployer{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[5]
+	mi := &file_internal_protobuf_services_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -809,7 +1062,7 @@ func (x *Deployer) String() string {
 func (*Deployer) ProtoMessage() {}
 
 func (x *Deployer) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[5]
+	mi := &file_internal_protobuf_services_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -822,7 +1075,7 @@ func (x *Deployer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Deployer.ProtoReflect.Descriptor instead.
 func (*Deployer) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{5}
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Deployer) GetIsDeploying() *wrapperspb.BoolValue {
@@ -881,7 +1134,7 @@ type Builder struct {
 
 func (x *Builder) Reset() {
 	*x = Builder{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[6]
+	mi := &file_internal_protobuf_services_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -893,7 +1146,7 @@ func (x *Builder) String() string {
 func (*Builder) ProtoMessage() {}
 
 func (x *Builder) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[6]
+	mi := &file_internal_protobuf_services_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -906,7 +1159,7 @@ func (x *Builder) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Builder.ProtoReflect.Descriptor instead.
 func (*Builder) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{6}
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *Builder) GetIsEvaluating() *wrapperspb.BoolValue {
@@ -965,7 +1218,7 @@ type Confirmer struct {
 
 func (x *Confirmer) Reset() {
 	*x = Confirmer{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[7]
+	mi := &file_internal_protobuf_services_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -977,7 +1230,7 @@ func (x *Confirmer) String() string {
 func (*Confirmer) ProtoMessage() {}
 
 func (x *Confirmer) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[7]
+	mi := &file_internal_protobuf_services_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -990,7 +1243,7 @@ func (x *Confirmer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Confirmer.ProtoReflect.Descriptor instead.
 func (*Confirmer) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{7}
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Confirmer) GetMode() int64 {
@@ -1045,7 +1298,7 @@ type Fetcher struct {
 
 func (x *Fetcher) Reset() {
 	*x = Fetcher{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[8]
+	mi := &file_internal_protobuf_services_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1057,7 +1310,7 @@ func (x *Fetcher) String() string {
 func (*Fetcher) ProtoMessage() {}
 
 func (x *Fetcher) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[8]
+	mi := &file_internal_protobuf_services_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1070,7 +1323,7 @@ func (x *Fetcher) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Fetcher.ProtoReflect.Descriptor instead.
 func (*Fetcher) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{8}
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Fetcher) GetIsFetching() *wrapperspb.BoolValue {
@@ -1104,7 +1357,7 @@ type Branch struct {
 
 func (x *Branch) Reset() {
 	*x = Branch{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[9]
+	mi := &file_internal_protobuf_services_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1116,7 +1369,7 @@ func (x *Branch) String() string {
 func (*Branch) ProtoMessage() {}
 
 func (x *Branch) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[9]
+	mi := &file_internal_protobuf_services_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1129,7 +1382,7 @@ func (x *Branch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Branch.ProtoReflect.Descriptor instead.
 func (*Branch) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{9}
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Branch) GetName() string {
@@ -1196,7 +1449,7 @@ type Remote struct {
 
 func (x *Remote) Reset() {
 	*x = Remote{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[10]
+	mi := &file_internal_protobuf_services_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1208,7 +1461,7 @@ func (x *Remote) String() string {
 func (*Remote) ProtoMessage() {}
 
 func (x *Remote) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[10]
+	mi := &file_internal_protobuf_services_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1221,7 +1474,7 @@ func (x *Remote) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Remote.ProtoReflect.Descriptor instead.
 func (*Remote) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{10}
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Remote) GetName() string {
@@ -1296,7 +1549,7 @@ type RepositoryStatus struct {
 
 func (x *RepositoryStatus) Reset() {
 	*x = RepositoryStatus{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[11]
+	mi := &file_internal_protobuf_services_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1308,7 +1561,7 @@ func (x *RepositoryStatus) String() string {
 func (*RepositoryStatus) ProtoMessage() {}
 
 func (x *RepositoryStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[11]
+	mi := &file_internal_protobuf_services_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1321,7 +1574,7 @@ func (x *RepositoryStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepositoryStatus.ProtoReflect.Descriptor instead.
 func (*RepositoryStatus) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{11}
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RepositoryStatus) GetSelectedCommitId() string {
@@ -1425,7 +1678,7 @@ type Store struct {
 
 func (x *Store) Reset() {
 	*x = Store{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[12]
+	mi := &file_internal_protobuf_services_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1437,7 +1690,7 @@ func (x *Store) String() string {
 func (*Store) ProtoMessage() {}
 
 func (x *Store) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[12]
+	mi := &file_internal_protobuf_services_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1450,7 +1703,7 @@ func (x *Store) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Store.ProtoReflect.Descriptor instead.
 func (*Store) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{12}
+	return file_internal_protobuf_services_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Store) GetDeployments() []*Deployment {
@@ -1476,7 +1729,7 @@ type Event_EvalStarted struct {
 
 func (x *Event_EvalStarted) Reset() {
 	*x = Event_EvalStarted{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[13]
+	mi := &file_internal_protobuf_services_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1488,7 +1741,7 @@ func (x *Event_EvalStarted) String() string {
 func (*Event_EvalStarted) ProtoMessage() {}
 
 func (x *Event_EvalStarted) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[13]
+	mi := &file_internal_protobuf_services_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1520,7 +1773,7 @@ type Event_EvalFinished struct {
 
 func (x *Event_EvalFinished) Reset() {
 	*x = Event_EvalFinished{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[14]
+	mi := &file_internal_protobuf_services_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1532,7 +1785,7 @@ func (x *Event_EvalFinished) String() string {
 func (*Event_EvalFinished) ProtoMessage() {}
 
 func (x *Event_EvalFinished) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[14]
+	mi := &file_internal_protobuf_services_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1564,7 +1817,7 @@ type Event_BuildStarted struct {
 
 func (x *Event_BuildStarted) Reset() {
 	*x = Event_BuildStarted{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[15]
+	mi := &file_internal_protobuf_services_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1576,7 +1829,7 @@ func (x *Event_BuildStarted) String() string {
 func (*Event_BuildStarted) ProtoMessage() {}
 
 func (x *Event_BuildStarted) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[15]
+	mi := &file_internal_protobuf_services_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1608,7 +1861,7 @@ type Event_BuildFinished struct {
 
 func (x *Event_BuildFinished) Reset() {
 	*x = Event_BuildFinished{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[16]
+	mi := &file_internal_protobuf_services_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1620,7 +1873,7 @@ func (x *Event_BuildFinished) String() string {
 func (*Event_BuildFinished) ProtoMessage() {}
 
 func (x *Event_BuildFinished) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[16]
+	mi := &file_internal_protobuf_services_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1653,7 +1906,7 @@ type Event_ConfirmationSubmitted struct {
 
 func (x *Event_ConfirmationSubmitted) Reset() {
 	*x = Event_ConfirmationSubmitted{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[17]
+	mi := &file_internal_protobuf_services_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1665,7 +1918,7 @@ func (x *Event_ConfirmationSubmitted) String() string {
 func (*Event_ConfirmationSubmitted) ProtoMessage() {}
 
 func (x *Event_ConfirmationSubmitted) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[17]
+	mi := &file_internal_protobuf_services_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1704,7 +1957,7 @@ type Event_ConfirmationCancelled struct {
 
 func (x *Event_ConfirmationCancelled) Reset() {
 	*x = Event_ConfirmationCancelled{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[18]
+	mi := &file_internal_protobuf_services_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1716,7 +1969,7 @@ func (x *Event_ConfirmationCancelled) String() string {
 func (*Event_ConfirmationCancelled) ProtoMessage() {}
 
 func (x *Event_ConfirmationCancelled) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[18]
+	mi := &file_internal_protobuf_services_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1749,7 +2002,7 @@ type Event_ConfirmationConfirmed struct {
 
 func (x *Event_ConfirmationConfirmed) Reset() {
 	*x = Event_ConfirmationConfirmed{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[19]
+	mi := &file_internal_protobuf_services_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1761,7 +2014,7 @@ func (x *Event_ConfirmationConfirmed) String() string {
 func (*Event_ConfirmationConfirmed) ProtoMessage() {}
 
 func (x *Event_ConfirmationConfirmed) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[19]
+	mi := &file_internal_protobuf_services_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1799,7 +2052,7 @@ type Event_Resume struct {
 
 func (x *Event_Resume) Reset() {
 	*x = Event_Resume{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[20]
+	mi := &file_internal_protobuf_services_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1811,7 +2064,7 @@ func (x *Event_Resume) String() string {
 func (*Event_Resume) ProtoMessage() {}
 
 func (x *Event_Resume) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[20]
+	mi := &file_internal_protobuf_services_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1835,7 +2088,7 @@ type Event_Suspend struct {
 
 func (x *Event_Suspend) Reset() {
 	*x = Event_Suspend{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[21]
+	mi := &file_internal_protobuf_services_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1847,7 +2100,7 @@ func (x *Event_Suspend) String() string {
 func (*Event_Suspend) ProtoMessage() {}
 
 func (x *Event_Suspend) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[21]
+	mi := &file_internal_protobuf_services_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1872,7 +2125,7 @@ type Event_DeploymentStarted struct {
 
 func (x *Event_DeploymentStarted) Reset() {
 	*x = Event_DeploymentStarted{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[22]
+	mi := &file_internal_protobuf_services_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1884,7 +2137,7 @@ func (x *Event_DeploymentStarted) String() string {
 func (*Event_DeploymentStarted) ProtoMessage() {}
 
 func (x *Event_DeploymentStarted) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[22]
+	mi := &file_internal_protobuf_services_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1916,7 +2169,7 @@ type Event_DeploymentFinished struct {
 
 func (x *Event_DeploymentFinished) Reset() {
 	*x = Event_DeploymentFinished{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[23]
+	mi := &file_internal_protobuf_services_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1928,7 +2181,7 @@ func (x *Event_DeploymentFinished) String() string {
 func (*Event_DeploymentFinished) ProtoMessage() {}
 
 func (x *Event_DeploymentFinished) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[23]
+	mi := &file_internal_protobuf_services_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1960,7 +2213,7 @@ type Event_RebootRequired struct {
 
 func (x *Event_RebootRequired) Reset() {
 	*x = Event_RebootRequired{}
-	mi := &file_internal_protobuf_services_proto_msgTypes[24]
+	mi := &file_internal_protobuf_services_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1972,7 +2225,7 @@ func (x *Event_RebootRequired) String() string {
 func (*Event_RebootRequired) ProtoMessage() {}
 
 func (x *Event_RebootRequired) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_services_proto_msgTypes[24]
+	mi := &file_internal_protobuf_services_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2103,7 +2356,7 @@ const file_internal_protobuf_services_proto_rawDesc = "" +
 	"\rrestart_comin\x18\x06 \x01(\v2\x1a.google.protobuf.BoolValueR\frestartComin\x12!\n" +
 	"\fprofile_path\x18\a \x01(\tR\vprofilePath\x12\x16\n" +
 	"\x06status\x18\b \x01(\tR\x06status\x12\x1c\n" +
-	"\toperation\x18\t \x01(\tR\toperation\"\xb7\x03\n" +
+	"\toperation\x18\t \x01(\tR\toperation\"\xf7\x03\n" +
 	"\x05State\x12@\n" +
 	"\x0eneed_to_reboot\x18\x01 \x01(\v2\x1a.google.protobuf.BoolValueR\fneedToReboot\x12=\n" +
 	"\fis_suspended\x18\x02 \x01(\v2\x1a.google.protobuf.BoolValueR\visSuspended\x12+\n" +
@@ -2112,7 +2365,30 @@ const file_internal_protobuf_services_proto_rawDesc = "" +
 	"\afetcher\x18\x05 \x01(\v2\x11.protobuf.FetcherR\afetcher\x12%\n" +
 	"\x05store\x18\x06 \x01(\v2\x0f.protobuf.StoreR\x05store\x12<\n" +
 	"\x0fbuild_confirmer\x18\a \x01(\v2\x13.protobuf.ConfirmerR\x0ebuildConfirmer\x12>\n" +
-	"\x10deploy_confirmer\x18\b \x01(\v2\x13.protobuf.ConfirmerR\x0fdeployConfirmer\"\xeb\x02\n" +
+	"\x10deploy_confirmer\x18\b \x01(\v2\x13.protobuf.ConfirmerR\x0fdeployConfirmer\x121\n" +
+	"\treconcile\x18\n" +
+	" \x01(\v2\x13.protobuf.ReconcileR\treconcileJ\x04\b\t\x10\n" +
+	"R\x05drift\"\\\n" +
+	"\x0fReconcileTarget\x12\x16\n" +
+	"\x06commit\x18\x01 \x01(\tR\x06commit\x12\x16\n" +
+	"\x06branch\x18\x02 \x01(\tR\x06branch\x12\x19\n" +
+	"\bout_path\x18\x03 \x01(\tR\aoutPath\"\xa5\x01\n" +
+	"\x12ReconcileCandidate\x12\x16\n" +
+	"\x06branch\x18\x01 \x01(\tR\x06branch\x12\x12\n" +
+	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x16\n" +
+	"\x06commit\x18\x03 \x01(\tR\x06commit\x12\x19\n" +
+	"\bout_path\x18\x04 \x01(\tR\aoutPath\x12\x18\n" +
+	"\aoutcome\x18\x05 \x01(\tR\aoutcome\x12\x16\n" +
+	"\x06reason\x18\x06 \x01(\tR\x06reason\"\xf8\x01\n" +
+	"\tReconcile\x12\x14\n" +
+	"\x05state\x18\x01 \x01(\tR\x05state\x123\n" +
+	"\adesired\x18\x02 \x01(\v2\x19.protobuf.ReconcileTargetR\adesired\x12\x18\n" +
+	"\acurrent\x18\x03 \x01(\tR\acurrent\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\x120\n" +
+	"\x05since\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\x12<\n" +
+	"\n" +
+	"candidates\x18\x06 \x03(\v2\x1c.protobuf.ReconcileCandidateR\n" +
+	"candidates\"\xeb\x02\n" +
 	"\bDeployer\x12=\n" +
 	"\fis_deploying\x18\x01 \x01(\v2\x1a.google.protobuf.BoolValueR\visDeploying\x124\n" +
 	"\n" +
@@ -2200,117 +2476,124 @@ func file_internal_protobuf_services_proto_rawDescGZIP() []byte {
 	return file_internal_protobuf_services_proto_rawDescData
 }
 
-var file_internal_protobuf_services_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_internal_protobuf_services_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_internal_protobuf_services_proto_goTypes = []any{
 	(*Event)(nil),                       // 0: protobuf.Event
 	(*ConfirmRequest)(nil),              // 1: protobuf.ConfirmRequest
 	(*Generation)(nil),                  // 2: protobuf.Generation
 	(*Deployment)(nil),                  // 3: protobuf.Deployment
 	(*State)(nil),                       // 4: protobuf.State
-	(*Deployer)(nil),                    // 5: protobuf.Deployer
-	(*Builder)(nil),                     // 6: protobuf.Builder
-	(*Confirmer)(nil),                   // 7: protobuf.Confirmer
-	(*Fetcher)(nil),                     // 8: protobuf.Fetcher
-	(*Branch)(nil),                      // 9: protobuf.Branch
-	(*Remote)(nil),                      // 10: protobuf.Remote
-	(*RepositoryStatus)(nil),            // 11: protobuf.RepositoryStatus
-	(*Store)(nil),                       // 12: protobuf.Store
-	(*Event_EvalStarted)(nil),           // 13: protobuf.Event.EvalStarted
-	(*Event_EvalFinished)(nil),          // 14: protobuf.Event.EvalFinished
-	(*Event_BuildStarted)(nil),          // 15: protobuf.Event.BuildStarted
-	(*Event_BuildFinished)(nil),         // 16: protobuf.Event.BuildFinished
-	(*Event_ConfirmationSubmitted)(nil), // 17: protobuf.Event.ConfirmationSubmitted
-	(*Event_ConfirmationCancelled)(nil), // 18: protobuf.Event.ConfirmationCancelled
-	(*Event_ConfirmationConfirmed)(nil), // 19: protobuf.Event.ConfirmationConfirmed
-	(*Event_Resume)(nil),                // 20: protobuf.Event.Resume
-	(*Event_Suspend)(nil),               // 21: protobuf.Event.Suspend
-	(*Event_DeploymentStarted)(nil),     // 22: protobuf.Event.DeploymentStarted
-	(*Event_DeploymentFinished)(nil),    // 23: protobuf.Event.DeploymentFinished
-	(*Event_RebootRequired)(nil),        // 24: protobuf.Event.RebootRequired
-	(*wrapperspb.BoolValue)(nil),        // 25: google.protobuf.BoolValue
-	(*timestamppb.Timestamp)(nil),       // 26: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),               // 27: google.protobuf.Empty
+	(*ReconcileTarget)(nil),             // 5: protobuf.ReconcileTarget
+	(*ReconcileCandidate)(nil),          // 6: protobuf.ReconcileCandidate
+	(*Reconcile)(nil),                   // 7: protobuf.Reconcile
+	(*Deployer)(nil),                    // 8: protobuf.Deployer
+	(*Builder)(nil),                     // 9: protobuf.Builder
+	(*Confirmer)(nil),                   // 10: protobuf.Confirmer
+	(*Fetcher)(nil),                     // 11: protobuf.Fetcher
+	(*Branch)(nil),                      // 12: protobuf.Branch
+	(*Remote)(nil),                      // 13: protobuf.Remote
+	(*RepositoryStatus)(nil),            // 14: protobuf.RepositoryStatus
+	(*Store)(nil),                       // 15: protobuf.Store
+	(*Event_EvalStarted)(nil),           // 16: protobuf.Event.EvalStarted
+	(*Event_EvalFinished)(nil),          // 17: protobuf.Event.EvalFinished
+	(*Event_BuildStarted)(nil),          // 18: protobuf.Event.BuildStarted
+	(*Event_BuildFinished)(nil),         // 19: protobuf.Event.BuildFinished
+	(*Event_ConfirmationSubmitted)(nil), // 20: protobuf.Event.ConfirmationSubmitted
+	(*Event_ConfirmationCancelled)(nil), // 21: protobuf.Event.ConfirmationCancelled
+	(*Event_ConfirmationConfirmed)(nil), // 22: protobuf.Event.ConfirmationConfirmed
+	(*Event_Resume)(nil),                // 23: protobuf.Event.Resume
+	(*Event_Suspend)(nil),               // 24: protobuf.Event.Suspend
+	(*Event_DeploymentStarted)(nil),     // 25: protobuf.Event.DeploymentStarted
+	(*Event_DeploymentFinished)(nil),    // 26: protobuf.Event.DeploymentFinished
+	(*Event_RebootRequired)(nil),        // 27: protobuf.Event.RebootRequired
+	(*wrapperspb.BoolValue)(nil),        // 28: google.protobuf.BoolValue
+	(*timestamppb.Timestamp)(nil),       // 29: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),               // 30: google.protobuf.Empty
 }
 var file_internal_protobuf_services_proto_depIdxs = []int32{
-	13, // 0: protobuf.Event.evalStartedType:type_name -> protobuf.Event.EvalStarted
-	14, // 1: protobuf.Event.evalFinishedType:type_name -> protobuf.Event.EvalFinished
-	15, // 2: protobuf.Event.buildStartedType:type_name -> protobuf.Event.BuildStarted
-	16, // 3: protobuf.Event.buildFinishedType:type_name -> protobuf.Event.BuildFinished
-	17, // 4: protobuf.Event.confirmationSubmittedType:type_name -> protobuf.Event.ConfirmationSubmitted
-	18, // 5: protobuf.Event.confirmationCancelledType:type_name -> protobuf.Event.ConfirmationCancelled
-	19, // 6: protobuf.Event.confirmationConfirmedType:type_name -> protobuf.Event.ConfirmationConfirmed
-	20, // 7: protobuf.Event.resume:type_name -> protobuf.Event.Resume
-	21, // 8: protobuf.Event.suspend:type_name -> protobuf.Event.Suspend
-	22, // 9: protobuf.Event.deploymentStartedType:type_name -> protobuf.Event.DeploymentStarted
-	23, // 10: protobuf.Event.deploymentFinishedType:type_name -> protobuf.Event.DeploymentFinished
-	24, // 11: protobuf.Event.rebootRequired:type_name -> protobuf.Event.RebootRequired
-	25, // 12: protobuf.Generation.selected_branch_is_testing:type_name -> google.protobuf.BoolValue
-	26, // 13: protobuf.Generation.eval_started_at:type_name -> google.protobuf.Timestamp
-	26, // 14: protobuf.Generation.eval_ended_at:type_name -> google.protobuf.Timestamp
-	26, // 15: protobuf.Generation.build_started_at:type_name -> google.protobuf.Timestamp
-	26, // 16: protobuf.Generation.build_ended_at:type_name -> google.protobuf.Timestamp
+	16, // 0: protobuf.Event.evalStartedType:type_name -> protobuf.Event.EvalStarted
+	17, // 1: protobuf.Event.evalFinishedType:type_name -> protobuf.Event.EvalFinished
+	18, // 2: protobuf.Event.buildStartedType:type_name -> protobuf.Event.BuildStarted
+	19, // 3: protobuf.Event.buildFinishedType:type_name -> protobuf.Event.BuildFinished
+	20, // 4: protobuf.Event.confirmationSubmittedType:type_name -> protobuf.Event.ConfirmationSubmitted
+	21, // 5: protobuf.Event.confirmationCancelledType:type_name -> protobuf.Event.ConfirmationCancelled
+	22, // 6: protobuf.Event.confirmationConfirmedType:type_name -> protobuf.Event.ConfirmationConfirmed
+	23, // 7: protobuf.Event.resume:type_name -> protobuf.Event.Resume
+	24, // 8: protobuf.Event.suspend:type_name -> protobuf.Event.Suspend
+	25, // 9: protobuf.Event.deploymentStartedType:type_name -> protobuf.Event.DeploymentStarted
+	26, // 10: protobuf.Event.deploymentFinishedType:type_name -> protobuf.Event.DeploymentFinished
+	27, // 11: protobuf.Event.rebootRequired:type_name -> protobuf.Event.RebootRequired
+	28, // 12: protobuf.Generation.selected_branch_is_testing:type_name -> google.protobuf.BoolValue
+	29, // 13: protobuf.Generation.eval_started_at:type_name -> google.protobuf.Timestamp
+	29, // 14: protobuf.Generation.eval_ended_at:type_name -> google.protobuf.Timestamp
+	29, // 15: protobuf.Generation.build_started_at:type_name -> google.protobuf.Timestamp
+	29, // 16: protobuf.Generation.build_ended_at:type_name -> google.protobuf.Timestamp
 	2,  // 17: protobuf.Deployment.generation:type_name -> protobuf.Generation
-	26, // 18: protobuf.Deployment.started_at:type_name -> google.protobuf.Timestamp
-	26, // 19: protobuf.Deployment.ended_at:type_name -> google.protobuf.Timestamp
-	25, // 20: protobuf.Deployment.restart_comin:type_name -> google.protobuf.BoolValue
-	25, // 21: protobuf.State.need_to_reboot:type_name -> google.protobuf.BoolValue
-	25, // 22: protobuf.State.is_suspended:type_name -> google.protobuf.BoolValue
-	6,  // 23: protobuf.State.builder:type_name -> protobuf.Builder
-	5,  // 24: protobuf.State.deployer:type_name -> protobuf.Deployer
-	8,  // 25: protobuf.State.fetcher:type_name -> protobuf.Fetcher
-	12, // 26: protobuf.State.store:type_name -> protobuf.Store
-	7,  // 27: protobuf.State.build_confirmer:type_name -> protobuf.Confirmer
-	7,  // 28: protobuf.State.deploy_confirmer:type_name -> protobuf.Confirmer
-	25, // 29: protobuf.Deployer.is_deploying:type_name -> google.protobuf.BoolValue
-	3,  // 30: protobuf.Deployer.deployment:type_name -> protobuf.Deployment
-	2,  // 31: protobuf.Deployer.generation_to_deploy:type_name -> protobuf.Generation
-	3,  // 32: protobuf.Deployer.previous_deployment:type_name -> protobuf.Deployment
-	25, // 33: protobuf.Deployer.is_suspended:type_name -> google.protobuf.BoolValue
-	25, // 34: protobuf.Builder.is_evaluating:type_name -> google.protobuf.BoolValue
-	25, // 35: protobuf.Builder.is_building:type_name -> google.protobuf.BoolValue
-	2,  // 36: protobuf.Builder.generation:type_name -> protobuf.Generation
-	25, // 37: protobuf.Builder.is_suspended:type_name -> google.protobuf.BoolValue
-	26, // 38: protobuf.Confirmer.autoconfirm_started_at:type_name -> google.protobuf.Timestamp
-	25, // 39: protobuf.Confirmer.autoconfirm_started:type_name -> google.protobuf.BoolValue
-	25, // 40: protobuf.Fetcher.is_fetching:type_name -> google.protobuf.BoolValue
-	11, // 41: protobuf.Fetcher.repository_status:type_name -> protobuf.RepositoryStatus
-	25, // 42: protobuf.Branch.signed:type_name -> google.protobuf.BoolValue
-	9,  // 43: protobuf.Remote.main:type_name -> protobuf.Branch
-	9,  // 44: protobuf.Remote.testing:type_name -> protobuf.Branch
-	26, // 45: protobuf.Remote.fetched_at:type_name -> google.protobuf.Timestamp
-	25, // 46: protobuf.Remote.fetched:type_name -> google.protobuf.BoolValue
-	25, // 47: protobuf.RepositoryStatus.selected_branch_is_testing:type_name -> google.protobuf.BoolValue
-	25, // 48: protobuf.RepositoryStatus.selected_commit_signed:type_name -> google.protobuf.BoolValue
-	25, // 49: protobuf.RepositoryStatus.selected_commit_should_be_signed:type_name -> google.protobuf.BoolValue
-	10, // 50: protobuf.RepositoryStatus.remotes:type_name -> protobuf.Remote
-	3,  // 51: protobuf.Store.deployments:type_name -> protobuf.Deployment
-	2,  // 52: protobuf.Store.generations:type_name -> protobuf.Generation
-	2,  // 53: protobuf.Event.EvalStarted.generation:type_name -> protobuf.Generation
-	2,  // 54: protobuf.Event.EvalFinished.generation:type_name -> protobuf.Generation
-	2,  // 55: protobuf.Event.BuildStarted.generation:type_name -> protobuf.Generation
-	2,  // 56: protobuf.Event.BuildFinished.generation:type_name -> protobuf.Generation
-	3,  // 57: protobuf.Event.DeploymentStarted.deployment:type_name -> protobuf.Deployment
-	3,  // 58: protobuf.Event.DeploymentFinished.deployment:type_name -> protobuf.Deployment
-	3,  // 59: protobuf.Event.RebootRequired.deployment:type_name -> protobuf.Deployment
-	27, // 60: protobuf.Comin.GetState:input_type -> google.protobuf.Empty
-	27, // 61: protobuf.Comin.Fetch:input_type -> google.protobuf.Empty
-	27, // 62: protobuf.Comin.Suspend:input_type -> google.protobuf.Empty
-	27, // 63: protobuf.Comin.Resume:input_type -> google.protobuf.Empty
-	1,  // 64: protobuf.Comin.Confirm:input_type -> protobuf.ConfirmRequest
-	27, // 65: protobuf.Comin.Events:input_type -> google.protobuf.Empty
-	27, // 66: protobuf.Comin.SwitchDeploymentLatest:input_type -> google.protobuf.Empty
-	4,  // 67: protobuf.Comin.GetState:output_type -> protobuf.State
-	27, // 68: protobuf.Comin.Fetch:output_type -> google.protobuf.Empty
-	27, // 69: protobuf.Comin.Suspend:output_type -> google.protobuf.Empty
-	27, // 70: protobuf.Comin.Resume:output_type -> google.protobuf.Empty
-	27, // 71: protobuf.Comin.Confirm:output_type -> google.protobuf.Empty
-	0,  // 72: protobuf.Comin.Events:output_type -> protobuf.Event
-	27, // 73: protobuf.Comin.SwitchDeploymentLatest:output_type -> google.protobuf.Empty
-	67, // [67:74] is the sub-list for method output_type
-	60, // [60:67] is the sub-list for method input_type
-	60, // [60:60] is the sub-list for extension type_name
-	60, // [60:60] is the sub-list for extension extendee
-	0,  // [0:60] is the sub-list for field type_name
+	29, // 18: protobuf.Deployment.started_at:type_name -> google.protobuf.Timestamp
+	29, // 19: protobuf.Deployment.ended_at:type_name -> google.protobuf.Timestamp
+	28, // 20: protobuf.Deployment.restart_comin:type_name -> google.protobuf.BoolValue
+	28, // 21: protobuf.State.need_to_reboot:type_name -> google.protobuf.BoolValue
+	28, // 22: protobuf.State.is_suspended:type_name -> google.protobuf.BoolValue
+	9,  // 23: protobuf.State.builder:type_name -> protobuf.Builder
+	8,  // 24: protobuf.State.deployer:type_name -> protobuf.Deployer
+	11, // 25: protobuf.State.fetcher:type_name -> protobuf.Fetcher
+	15, // 26: protobuf.State.store:type_name -> protobuf.Store
+	10, // 27: protobuf.State.build_confirmer:type_name -> protobuf.Confirmer
+	10, // 28: protobuf.State.deploy_confirmer:type_name -> protobuf.Confirmer
+	7,  // 29: protobuf.State.reconcile:type_name -> protobuf.Reconcile
+	5,  // 30: protobuf.Reconcile.desired:type_name -> protobuf.ReconcileTarget
+	29, // 31: protobuf.Reconcile.since:type_name -> google.protobuf.Timestamp
+	6,  // 32: protobuf.Reconcile.candidates:type_name -> protobuf.ReconcileCandidate
+	28, // 33: protobuf.Deployer.is_deploying:type_name -> google.protobuf.BoolValue
+	3,  // 34: protobuf.Deployer.deployment:type_name -> protobuf.Deployment
+	2,  // 35: protobuf.Deployer.generation_to_deploy:type_name -> protobuf.Generation
+	3,  // 36: protobuf.Deployer.previous_deployment:type_name -> protobuf.Deployment
+	28, // 37: protobuf.Deployer.is_suspended:type_name -> google.protobuf.BoolValue
+	28, // 38: protobuf.Builder.is_evaluating:type_name -> google.protobuf.BoolValue
+	28, // 39: protobuf.Builder.is_building:type_name -> google.protobuf.BoolValue
+	2,  // 40: protobuf.Builder.generation:type_name -> protobuf.Generation
+	28, // 41: protobuf.Builder.is_suspended:type_name -> google.protobuf.BoolValue
+	29, // 42: protobuf.Confirmer.autoconfirm_started_at:type_name -> google.protobuf.Timestamp
+	28, // 43: protobuf.Confirmer.autoconfirm_started:type_name -> google.protobuf.BoolValue
+	28, // 44: protobuf.Fetcher.is_fetching:type_name -> google.protobuf.BoolValue
+	14, // 45: protobuf.Fetcher.repository_status:type_name -> protobuf.RepositoryStatus
+	28, // 46: protobuf.Branch.signed:type_name -> google.protobuf.BoolValue
+	12, // 47: protobuf.Remote.main:type_name -> protobuf.Branch
+	12, // 48: protobuf.Remote.testing:type_name -> protobuf.Branch
+	29, // 49: protobuf.Remote.fetched_at:type_name -> google.protobuf.Timestamp
+	28, // 50: protobuf.Remote.fetched:type_name -> google.protobuf.BoolValue
+	28, // 51: protobuf.RepositoryStatus.selected_branch_is_testing:type_name -> google.protobuf.BoolValue
+	28, // 52: protobuf.RepositoryStatus.selected_commit_signed:type_name -> google.protobuf.BoolValue
+	28, // 53: protobuf.RepositoryStatus.selected_commit_should_be_signed:type_name -> google.protobuf.BoolValue
+	13, // 54: protobuf.RepositoryStatus.remotes:type_name -> protobuf.Remote
+	3,  // 55: protobuf.Store.deployments:type_name -> protobuf.Deployment
+	2,  // 56: protobuf.Store.generations:type_name -> protobuf.Generation
+	2,  // 57: protobuf.Event.EvalStarted.generation:type_name -> protobuf.Generation
+	2,  // 58: protobuf.Event.EvalFinished.generation:type_name -> protobuf.Generation
+	2,  // 59: protobuf.Event.BuildStarted.generation:type_name -> protobuf.Generation
+	2,  // 60: protobuf.Event.BuildFinished.generation:type_name -> protobuf.Generation
+	3,  // 61: protobuf.Event.DeploymentStarted.deployment:type_name -> protobuf.Deployment
+	3,  // 62: protobuf.Event.DeploymentFinished.deployment:type_name -> protobuf.Deployment
+	3,  // 63: protobuf.Event.RebootRequired.deployment:type_name -> protobuf.Deployment
+	30, // 64: protobuf.Comin.GetState:input_type -> google.protobuf.Empty
+	30, // 65: protobuf.Comin.Fetch:input_type -> google.protobuf.Empty
+	30, // 66: protobuf.Comin.Suspend:input_type -> google.protobuf.Empty
+	30, // 67: protobuf.Comin.Resume:input_type -> google.protobuf.Empty
+	1,  // 68: protobuf.Comin.Confirm:input_type -> protobuf.ConfirmRequest
+	30, // 69: protobuf.Comin.Events:input_type -> google.protobuf.Empty
+	30, // 70: protobuf.Comin.SwitchDeploymentLatest:input_type -> google.protobuf.Empty
+	4,  // 71: protobuf.Comin.GetState:output_type -> protobuf.State
+	30, // 72: protobuf.Comin.Fetch:output_type -> google.protobuf.Empty
+	30, // 73: protobuf.Comin.Suspend:output_type -> google.protobuf.Empty
+	30, // 74: protobuf.Comin.Resume:output_type -> google.protobuf.Empty
+	30, // 75: protobuf.Comin.Confirm:output_type -> google.protobuf.Empty
+	0,  // 76: protobuf.Comin.Events:output_type -> protobuf.Event
+	30, // 77: protobuf.Comin.SwitchDeploymentLatest:output_type -> google.protobuf.Empty
+	71, // [71:78] is the sub-list for method output_type
+	64, // [64:71] is the sub-list for method input_type
+	64, // [64:64] is the sub-list for extension type_name
+	64, // [64:64] is the sub-list for extension extendee
+	0,  // [0:64] is the sub-list for field type_name
 }
 
 func init() { file_internal_protobuf_services_proto_init() }
@@ -2338,7 +2621,7 @@ func file_internal_protobuf_services_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_protobuf_services_proto_rawDesc), len(file_internal_protobuf_services_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   25,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
