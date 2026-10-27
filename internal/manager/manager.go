@@ -64,7 +64,9 @@ type Manager struct {
 
 	// tick is the period of the passes that need no event.
 	tick time.Duration
-	exit func(code int)
+	// startedAt is this process's start, an input to failedLatest.
+	startedAt time.Time
+	exit      func(code int)
 	// wakeCh requests a pass; triggerCh requests one with the given trigger.
 	wakeCh    chan struct{}
 	triggerCh chan string
@@ -114,6 +116,7 @@ func New(s *store.Store,
 		configurationOperations: configurationOperations,
 		preflight:               preflight,
 		tick:                    30 * time.Second,
+		startedAt:               time.Now(),
 		exit:                    os.Exit,
 		wakeCh:                  make(chan struct{}, 1),
 		triggerCh:               make(chan string, 1),

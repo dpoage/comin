@@ -158,6 +158,7 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 	m.mu.Unlock()
 	obs.InFlight = obs.InFlight || m.deployer.IsDeploying()
 	obs.Suspended = m.isSuspended.Load()
+	obs.ProcessStartedAt = m.startedAt
 	obs.AsksRun = m.preflight.Path != ""
 	obs.Trigger = trigger
 	obs.Deployments = m.storage.DeploymentList()

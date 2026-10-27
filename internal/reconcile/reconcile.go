@@ -4,6 +4,8 @@
 package reconcile
 
 import (
+	"time"
+
 	"github.com/nlewo/comin/internal/preflight"
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/repository"
@@ -65,6 +67,9 @@ type Observation struct {
 	// InFlight: a deployment is submitted or running.
 	InFlight  bool
 	Suspended bool
+	// ProcessStartedAt is when this comin process started: a finished
+	// failure older than it is retried once.
+	ProcessStartedAt time.Time
 	// AsksRun: a preflight command is configured, so an ask reads the store path.
 	AsksRun        bool
 	DeployConfirm  DeployConfirm
@@ -103,7 +108,7 @@ func wait(desired int) Decision { return Decision{Action: Wait, Target: -1, Desi
 // stopping at the first pending or admitted one. Nothing below the stop
 // point is evaluated, built or asked. An admitted candidate is deployed iff
 // no deployment is in flight, the running system is known and differs from
-// its out path, and its latest finished deployment did not fail.
+// its out path, and failedLatest does not block its out path.
 func Decide(o Observation) Decision {
 	if o.Suspended {
 		return wait(-1)
@@ -133,7 +138,7 @@ func Decide(o Observation) Decision {
 func deploy(o Observation, i int) Decision {
 	d := o.Candidates[i]
 	switch {
-	case o.InFlight, o.Current == "", o.Current == d.OutPath, failedLatest(o.Deployments, d.OutPath):
+	case o.InFlight, o.Current == "", o.Current == d.OutPath, failedLatest(o.Deployments, d.OutPath, o.ProcessStartedAt):
 		return wait(i)
 	case !d.Realized:
 		return Decision{Action: Eval, Target: i, Desired: -1}
@@ -188,10 +193,11 @@ func outcome(c Candidate, asksRun bool) result {
 	return refused
 }
 
-// failedLatest reports whether, among the deployments of outPath that
-// finished, the one that ended last failed.
-func failedLatest(deployments []*protobuf.Deployment, outPath string) bool {
-	var last *protobuf.Deployment
+// failedLatest reports whether outPath is blocked: its last finished deployment
+// failed, in this process or with the finished one before it failed too: a lone
+// failure from before the process started is retried once after the restart.
+func failedLatest(deployments []*protobuf.Deployment, outPath string, startedAt time.Time) bool {
+	var last, prev *protobuf.Deployment
 	for _, d := range deployments {
 		if d.Generation.GetOutPath() != outPath {
 			continue
@@ -199,9 +205,20 @@ func failedLatest(deployments []*protobuf.Deployment, outPath string) bool {
 		if d.Status != store.StatusToString(store.Done) && d.Status != store.StatusToString(store.Failed) {
 			continue
 		}
+		// The store keeps a row per deployment twice (the row the deployer
+		// transitions and the copy the manager commits); one deployment
+		// counts once.
+		if last != nil && d.GetUuid() == last.GetUuid() && d.GetEndedAt().AsTime().Equal(last.GetEndedAt().AsTime()) {
+			continue
+		}
 		if last == nil || d.EndedAt.AsTime().After(last.EndedAt.AsTime()) {
-			last = d
+			prev, last = last, d
+		} else if prev == nil || d.EndedAt.AsTime().After(prev.EndedAt.AsTime()) {
+			prev = d
 		}
 	}
-	return last != nil && last.Status == store.StatusToString(store.Failed)
+	if last == nil || last.Status != store.StatusToString(store.Failed) {
+		return false
+	}
+	return !last.EndedAt.AsTime().Before(startedAt) || (prev != nil && prev.Status == store.StatusToString(store.Failed))
 }

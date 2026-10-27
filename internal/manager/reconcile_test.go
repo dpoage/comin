@@ -296,14 +296,15 @@ func TestFailedDeployment(t *testing.T) {
 
 	r.stop()
 	r.start()
+	r.waitDeploys(2)
 	r.settle(10)
-	assert.Len(t, r.exec.deployLog(), 1, "the failed deployment is not remembered across a restart")
+	assert.Len(t, r.exec.deployLog(), 2, "a single failure from before the restart is retried once")
 
 	r.exec.set(func(e *fakeExec) { e.failDeploy = false })
 	d2 := r.pushMain("file-m2")
 	r.fetch()
-	r.waitDeploys(2)
-	assert.Equal(t, r.out(d2), r.exec.deployLog()[1].out)
+	r.waitDeploys(3)
+	assert.Equal(t, r.out(d2), r.exec.deployLog()[2].out)
 	r.waitCurrent(r.out(d2))
 }
 

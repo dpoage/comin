@@ -110,8 +110,9 @@ head is refused or failed. The first candidate admitted by the
 operation configured for its branch. When no command is configured,
 every candidate is admitted.
 
-A candidate whose latest deployment of the same system failed is not
-deployed again until the repository selects a different system.
+A candidate whose latest finished deployment of the same system failed
+is not deployed again automatically, except once after a comin restart
+interrupted it; `comin switch-latest` still deploys it on request.
 
 **Fork behaviour**: when `services.comin.preflightCommand` is `null`,
 comin reverts a change made outside of comin (`nixos-rebuild`, a
