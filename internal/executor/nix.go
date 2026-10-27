@@ -30,7 +30,7 @@ func (n *NixLocal) NeedToReboot(outPath, operation string) bool {
 	return utils.NeedToRebootLinux(outPath, operation)
 }
 func (n *NixLocal) CurrentSystem() (string, error) {
-	return utils.CurrentSystemLinux()
+	return utils.CurrentSystem()
 }
 
 func (n *NixLocal) Eval(ctx context.Context, repositoryPath, repositorySubdir, commitId, systemAttr, hostname string) (drvPath string, outPath string, machineId string, err error) {
