@@ -54,7 +54,8 @@ func (f *Fetcher) Latest() *protobuf.RepositoryStatus {
 // Fetched returns a channel signalled after every completed fetch,
 // whether the selection changed, did not change, or the fetch failed.
 // The channel has a capacity of one: signals of fetches completed while
-// a signal is still pending are coalesced into it.
+// a signal is still pending are coalesced into it. It has a single reader:
+// a second receiver would take signals from the first.
 func (f *Fetcher) Fetched() <-chan struct{} {
 	return f.fetched
 }

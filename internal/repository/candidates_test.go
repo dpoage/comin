@@ -476,3 +476,60 @@ func TestCandidatesTestingVerdictOfSelectedCommit(t *testing.T) {
 	assert.False(t, candidates[0].Verified)
 	assert.Equal(t, "", candidates[0].SignedBy)
 }
+
+// Every checkout since start fails, then testing moves onto main and main
+// disappears: the selected testing head has no verdict of its own.
+func TestCandidatesVerdictWithoutAnySuccessfulCheckout(t *testing.T) {
+	for _, withKeys := range []bool{true, false} {
+		r1Dir := t.TempDir()
+		r1, _ := initRemoteRepostiory(r1Dir, true)
+		cMain, _ := headOfBranch(t, r1, "main")
+		unsigned, _ := commitFile(r1, r1Dir, "testing", "file-unsigned")
+
+		r := newCominRepository(t, "", originRemote("origin", r1Dir))
+		if withKeys {
+			r = newSigningCominRepository(t, r1Dir)
+		}
+		readOnlyWorktree(t, r)
+		r.Fetch([]string{"origin"})
+		assert.NotNil(t, r.Update())
+
+		assert.Nil(t, r1.Storer.SetReference(plumbing.NewHashReference("refs/heads/testing", plumbing.NewHash(cMain))))
+		assert.Nil(t, r1.Storer.RemoveReference(plumbing.NewBranchReferenceName("main")))
+		r.Fetch([]string{"origin"})
+		assert.NotNil(t, r.Update())
+
+		candidates := Candidates(r.GetRepositoryStatus())
+		assert.Equal(t, unsigned, candidates[0].CommitId)
+		assert.True(t, candidates[0].Testing)
+		assert.Equal(t, !withKeys, candidates[0].Verified, "keys configured: %v", withKeys)
+		assert.Equal(t, "", candidates[0].SignedBy)
+	}
+}
+
+// A candidate whose branch holds no verdict for its commit is verified only
+// when no GPG key is configured.
+func TestCandidatesWithoutVerdictForTheCommit(t *testing.T) {
+	for _, keys := range [][]string{{"./test.public"}, nil} {
+		rs := NewRepositoryStatus(types.GitConfig{
+			GpgPublicKeyPaths: keys,
+			Remotes:           []types.Remote{originRemote("origin", "")},
+		}, "main-commit")
+		rs.SelectedCommitId = "testing-commit"
+		rs.SelectedRemoteName = "origin"
+		rs.SelectedBranchName = "testing"
+		rs.SelectedBranchIsTesting = wrapperspb.Bool(true)
+		remote := GetRemote(rs, "origin")
+		remote.Main.CommitId = "main-commit"
+		remote.Testing.CommitId = "other-commit"
+		remote.Testing.Signed = wrapperspb.Bool(true)
+		remote.Testing.SignedBy = "test <test@comin.space>"
+
+		candidates := Candidates(rs)
+		assert.Equal(t, 2, len(candidates))
+		for _, c := range candidates {
+			assert.Equal(t, len(keys) == 0, c.Verified, "%s with keys %v", c.CommitId, keys)
+			assert.Equal(t, "", c.SignedBy)
+		}
+	}
+}

@@ -10,9 +10,9 @@ type Candidate struct {
 	Testing                             bool
 	MainCommitId                        string // the main commit the candidate sits on (copied into the generation)
 	MainRemoteName, MainBranchName      string // copied from rs.main_remote_name/main_branch_name (generation fields)
-	// Verified is false iff signing is required and no configured key
-	// signed CommitId: the branch verdict when Update wrote one (it does
-	// iff GPG keys are configured), else !selected_commit_should_be_signed.
+	// Verified = !required || (a verdict exists for exactly CommitId && it
+	// is signed), where required is rs.selected_commit_should_be_signed, set
+	// from the configured GPG keys when the status is created.
 	Verified bool
 	SignedBy string // the signer's primary identity name when signed
 }
@@ -26,11 +26,11 @@ func Candidates(rs *pb.RepositoryStatus) []Candidate {
 	candidates := []Candidate{}
 
 	if rs.SelectedBranchIsTesting.GetValue() {
-		var branch *pb.Branch
-		if remote := GetRemote(rs, rs.SelectedRemoteName); remote != nil && remote.Testing.GetCommitId() == rs.SelectedCommitId {
-			branch = remote.Testing
+		var testing *pb.Branch
+		if remote := GetRemote(rs, rs.SelectedRemoteName); remote != nil {
+			testing = remote.Testing
 		}
-		verified, signedBy := verdict(rs, branch)
+		verified, signedBy := verdict(rs, testing, rs.SelectedCommitId)
 		candidates = append(candidates, Candidate{
 			Remote:         rs.SelectedRemoteName,
 			Branch:         rs.SelectedBranchName,
@@ -51,7 +51,7 @@ func Candidates(rs *pb.RepositoryStatus) []Candidate {
 	if remote == nil {
 		return candidates
 	}
-	verified, signedBy := verdict(rs, remote.Main)
+	verified, signedBy := verdict(rs, remote.Main, rs.MainCommitId)
 	return append(candidates, Candidate{
 		Remote:         remote.Name,
 		Branch:         remote.Main.Name,
@@ -86,11 +86,11 @@ func mainRemote(rs *pb.RepositoryStatus) *pb.Remote {
 	return fallback
 }
 
-// verdict returns Verified and SignedBy of the head of branch, which is nil
-// when the candidate has no branch verdict of its own.
-func verdict(rs *pb.RepositoryStatus, branch *pb.Branch) (bool, string) {
-	if branch.GetSigned() != nil {
-		return branch.Signed.GetValue(), branch.SignedBy
+// verdict returns Verified and SignedBy of commitId: without a signed
+// verdict branch holds for commitId, only an unrequired signature verifies.
+func verdict(rs *pb.RepositoryStatus, branch *pb.Branch, commitId string) (bool, string) {
+	if branch.GetCommitId() == commitId && branch.GetSigned().GetValue() {
+		return true, branch.SignedBy
 	}
 	return !rs.SelectedCommitShouldBeSigned.GetValue(), ""
 }

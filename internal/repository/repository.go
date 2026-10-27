@@ -211,7 +211,6 @@ func (r *repository) Update() error {
 	}
 
 	if len(r.gpgPubliKeys) > 0 {
-		r.RepositoryStatus.SelectedCommitShouldBeSigned = wrapperspb.Bool(true)
 		signedBy, err := headSignedBy(r.Repository, r.gpgPubliKeys)
 		if err != nil {
 			r.RepositoryStatus.ErrorMsg = err.Error()
@@ -223,8 +222,6 @@ func (r *repository) Update() error {
 			r.RepositoryStatus.SelectedCommitSigned = wrapperspb.Bool(true)
 			r.RepositoryStatus.SelectedCommitSignedBy = signedBy.PrimaryIdentity().Name
 		}
-	} else {
-		r.RepositoryStatus.SelectedCommitShouldBeSigned = wrapperspb.Bool(false)
 	}
 	return nil
 }
