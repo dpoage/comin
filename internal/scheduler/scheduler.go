@@ -38,6 +38,7 @@ func (s Scheduler) FetchRemotes(fetcher *fetcher.Fetcher, remotes []types.Remote
 						fetcher.TriggerFetch([]string{remote.Name})
 					},
 				),
+				gocron.WithStartAt(gocron.WithStartImmediately()),
 				gocron.WithSingletonMode(gocron.LimitModeReschedule),
 				gocron.WithName(fmt.Sprintf("fetch-remote-%s", remote.Name)),
 			)

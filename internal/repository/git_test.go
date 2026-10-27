@@ -151,3 +151,26 @@ func TestHeadSignedBy(t *testing.T) {
 	assert.Nil(t, signedBy)
 
 }
+
+func TestCommitSignedBy(t *testing.T) {
+	dir := t.TempDir()
+	remoteRepository, _ := git.PlainInit(dir, false)
+	r, _ := os.Open("./test.private")
+	entityList, _ := openpgp.ReadArmoredKeyRing(r)
+	signed, _ := commitFileAndSign(remoteRepository, dir, "main", "file-1", entityList[0])
+	unsigned, _ := commitFile(remoteRepository, dir, "main", "file-2")
+	testPublic, _ := os.ReadFile("./test.public")
+	keys := []string{string(testPublic)}
+
+	signedBy, err := commitSignedBy(remoteRepository, plumbing.NewHash(signed), keys)
+	assert.Nil(t, err)
+	assert.Equal(t, "test <test@comin.space>", signedBy.PrimaryIdentity().Name)
+
+	signedBy, err = commitSignedBy(remoteRepository, plumbing.NewHash(unsigned), keys)
+	assert.Nil(t, err)
+	assert.Nil(t, signedBy)
+
+	signedBy, err = commitSignedBy(remoteRepository, plumbing.NewHash("1111111111111111111111111111111111111111"), keys)
+	assert.NotNil(t, err)
+	assert.Nil(t, signedBy)
+}

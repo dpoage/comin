@@ -181,6 +181,10 @@ message Branch {
   string commit_msg = 3;
   string error_msg = 4;
   string on_top_of = 5;
+  // True when one of the configured GPG public keys signed commit_id
+  google.protobuf.BoolValue signed = 6;
+  // The primary identity name of the signer of commit_id, when signed
+  string signed_by = 7;
 }
 
 message Remote {

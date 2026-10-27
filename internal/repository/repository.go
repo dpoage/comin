@@ -138,6 +138,7 @@ func (r *repository) Update() error {
 		remote.Main.CommitId = head.String()
 		remote.Main.CommitMsg = msg
 		remote.Main.OnTopOf = r.RepositoryStatus.MainCommitId
+		r.setBranchSigned(remote.Main)
 
 		if selectedCommitId == "" {
 			selectedCommitId = head.String()
@@ -188,6 +189,7 @@ func (r *repository) Update() error {
 		remote.Testing.CommitId = head.String()
 		remote.Testing.CommitMsg = msg
 		remote.Testing.OnTopOf = r.RepositoryStatus.MainCommitId
+		r.setBranchSigned(remote.Testing)
 
 		if head.String() != selectedCommitId && head.String() != r.RepositoryStatus.MainCommitId {
 			selectedCommitId = head.String()
@@ -209,7 +211,6 @@ func (r *repository) Update() error {
 	}
 
 	if len(r.gpgPubliKeys) > 0 {
-		r.RepositoryStatus.SelectedCommitShouldBeSigned = wrapperspb.Bool(true)
 		signedBy, err := headSignedBy(r.Repository, r.gpgPubliKeys)
 		if err != nil {
 			r.RepositoryStatus.ErrorMsg = err.Error()
@@ -221,8 +222,25 @@ func (r *repository) Update() error {
 			r.RepositoryStatus.SelectedCommitSigned = wrapperspb.Bool(true)
 			r.RepositoryStatus.SelectedCommitSignedBy = signedBy.PrimaryIdentity().Name
 		}
-	} else {
-		r.RepositoryStatus.SelectedCommitShouldBeSigned = wrapperspb.Bool(false)
 	}
 	return nil
+}
+
+// setBranchSigned records in branch the signature verdict of
+// branch.CommitId. It writes branch.Signed iff GPG keys are configured.
+func (r *repository) setBranchSigned(branch *pb.Branch) {
+	if len(r.gpgPubliKeys) == 0 {
+		return
+	}
+	signedBy, err := commitSignedBy(r.Repository, plumbing.NewHash(branch.CommitId), r.gpgPubliKeys)
+	if err != nil {
+		logrus.Errorf("repository: failed to verify the signature of commit %s: %s", branch.CommitId, err)
+	}
+	if signedBy == nil {
+		branch.Signed = wrapperspb.Bool(false)
+		branch.SignedBy = ""
+	} else {
+		branch.Signed = wrapperspb.Bool(true)
+		branch.SignedBy = signedBy.PrimaryIdentity().Name
+	}
 }
