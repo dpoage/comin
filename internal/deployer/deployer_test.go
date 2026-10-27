@@ -81,7 +81,7 @@ func TestDeployerSubmit(t *testing.T) {
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.False(c, d.IsDeploying())
 		assert.Equal(c, "profile-path", d.Deployment().ProfilePath)
-		assert.Nil(c, d.GenerationToDeploy)
+		assert.Nil(t, d.GenerationToDeploy)
 	}, 5*time.Second, 100*time.Millisecond)
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -114,12 +114,12 @@ func TestDeployerSuspend(t *testing.T) {
 
 	d.Submit(&protobuf.Generation{SelectedCommitId: "commit-1"}, "test")
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.True(c, d.RunnerIsSuspended())
+		assert.True(t, d.RunnerIsSuspended())
 	}, 3*time.Second, 100*time.Millisecond)
 
 	d.Resume()
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.False(c, d.RunnerIsSuspended())
-		assert.True(c, d.IsDeploying())
+		assert.False(t, d.RunnerIsSuspended())
+		assert.True(t, d.IsDeploying())
 	}, 3*time.Second, 100*time.Millisecond)
 }

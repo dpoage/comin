@@ -256,7 +256,7 @@ func TestIncorrectMachineId(t *testing.T) {
 	}
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.False(c, m.GetState().Builder.IsBuilding.GetValue())
+		assert.False(t, m.GetState().Builder.IsBuilding.GetValue())
 	}, 5*time.Second, 100*time.Millisecond)
 }
 
@@ -288,7 +288,7 @@ func TestCorrectMachineId(t *testing.T) {
 	}
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.True(c, m.GetState().Builder.IsBuilding.GetValue())
+		assert.True(t, m.GetState().Builder.IsBuilding.GetValue())
 	}, 5*time.Second, 100*time.Millisecond)
 }
 

@@ -1,6 +1,6 @@
 package store
 
-// C9: store.json stays loadable by be6025e's store.Load, which rejects
+// store.json stays loadable by be6025e's store.Load, which rejects
 // unknown fields (protojson.UnmarshalOptions{} defaults DiscardUnknown to
 // false). Any new comin state therefore lives OUTSIDE store.json.
 //

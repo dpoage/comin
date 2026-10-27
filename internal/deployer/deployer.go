@@ -211,6 +211,7 @@ func (d *Deployer) Run(ctx context.Context) {
 				logrus.Errorf("deployer: could not update the deployment %s in the store", dpl.Uuid)
 				continue
 			}
+			d.deployment.Store(deployment)
 			cmd := d.postDeploymentCommand
 			if cmd != "" {
 				_, err = runPostDeploymentCommand(cmd, deployment)
@@ -220,7 +221,6 @@ func (d *Deployer) Run(ctx context.Context) {
 			}
 
 			d.isDeploying.Store(false)
-			d.deployment.Store(deployment)
 			d.DeploymentDoneCh <- d.Deployment()
 		}
 	}()
