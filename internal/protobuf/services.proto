@@ -165,8 +165,11 @@ message ReconcileCandidate {
   string out_path = 4;
   // outcome is one of admitted, refused, failed, pending or skipped
   string outcome = 5;
-  // reason is the preflight line of a refusal, comin's line of a failure
-  // or of pending progress; empty for admitted and skipped
+  // reason is the preflight line of a refusal, comin's line of a failure,
+  // comin's progress line of a pending candidate (evaluating, building or
+  // awaiting build confirmation <sha>; deployment in flight <sha> when it
+  // is not asked because a deployment of <sha> is in flight); empty for
+  // admitted and skipped
   string reason = 6;
 }
 

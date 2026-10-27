@@ -27,6 +27,9 @@ const (
 	StateFailed    = "failed"
 )
 
+// ReasonNoCandidate is the reason of a walk over no candidate.
+const ReasonNoCandidate = "no candidate"
+
 // Stage is how far the generation of a candidate has progressed.
 type Stage int
 
@@ -163,7 +166,8 @@ type Decision struct {
 	// Status labels the pass this decision ends.
 	Status Status
 	// Decisive reports whether this decision ends a pending manual
-	// request: a deployment was handed over, or the walk concluded.
+	// request: a deployment was handed over, or the walk concluded while
+	// no deployment is in flight.
 	Decisive bool
 }
 
@@ -177,10 +181,12 @@ func Decide(o Observation) Decision {
 	d := decide(o)
 	if o.InFlight {
 		// A deployment in flight is the first status row, whatever the
-		// walk is preparing next.
+		// walk is preparing next, and a request made meanwhile waits for
+		// the pass after it.
 		d.Status.State = StateDeploying
 		d.Status.Desired = o.InFlightTarget
 		d.Status.Reason = ""
+		d.Decisive = false
 	}
 	return d
 }
@@ -216,9 +222,9 @@ func decide(o Observation) Decision {
 			return waiting(-1, st)
 		case unasked:
 			if o.InFlight {
-				st := pendingStatus(*c)
-				st.Reason = ""
-				st.Candidates = appendStopped(entries, entry(*c, OutcomePending, ""), o.Candidates[i+1:])
+				// Asks wait for the deployment in flight to end.
+				st := Status{State: StateWaiting}
+				st.Candidates = appendStopped(entries, entry(*c, OutcomePending, inFlightReason(o)), o.Candidates[i+1:])
 				return waiting(-1, st)
 			}
 			return Decision{Action: Ask, Target: i, Desired: -1}
@@ -241,9 +247,9 @@ func decide(o Observation) Decision {
 	case firstFailed != nil:
 		return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(failedStatus(*firstFailed), entries), Decisive: true}
 	case firstRefused != nil:
-		return waiting(-1, withCandidates(Status{State: StateWaiting, Reason: firstRefused.Verdict.Reason}, entries))
+		return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(Status{State: StateWaiting, Reason: firstRefused.Verdict.Reason}, entries), Decisive: true}
 	}
-	return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(Status{State: StateWaiting, Reason: "no candidate"}, entries), Decisive: true}
+	return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(Status{State: StateWaiting, Reason: ReasonNoCandidate}, entries), Decisive: true}
 }
 
 // entry builds the walk entry of c.
@@ -293,6 +299,15 @@ func pendingReason(c Candidate) string {
 	return "evaluating " + c.CommitId
 }
 
+// inFlightReason is the reason of a candidate the walk does not ask while
+// a deployment is in flight: the commit of the in-flight target, when known.
+func inFlightReason(o Observation) string {
+	if o.InFlightTarget == nil {
+		return "deployment in flight"
+	}
+	return "deployment in flight " + o.InFlightTarget.Commit
+}
+
 // failedStatus labels the first failed candidate of an exhausted walk.
 func failedStatus(c Candidate) Status {
 	t := TargetOf(c)
@@ -328,7 +343,7 @@ func deploy(o Observation, i int) Decision {
 	case o.InFlight:
 		return wait(i)
 	case o.Current == "":
-		return waiting(i, Status{State: StateWaiting, Desired: &t, Reason: "current system unknown: " + o.CurrentErr})
+		return waiting(i, Status{State: StateWaiting, Desired: &t, Reason: withErr("current system unknown", o.CurrentErr)})
 	case o.Current == d.OutPath:
 		return Decision{Action: Wait, Target: -1, Desired: i, Status: Status{State: StateConverged, Desired: &t}, Decisive: true}
 	case blocked:

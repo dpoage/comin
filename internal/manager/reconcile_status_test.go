@@ -144,3 +144,30 @@ func TestStatusArtifact(t *testing.T) {
 	v = waitState(t, r, "converged")
 	assertDesired(t, v, map[string]any{"commit": testing, "branch": "testing", "out_path": r.out(testing)})
 }
+
+func TestStatusWhileADeploymentIsInFlight(t *testing.T) {
+	r := newRig(t, rigOpts{preflight: true})
+	testing := r.pushTesting("file-t1")
+	r.exec.set(func(e *fakeExec) { e.deployDelay = 2 * time.Second })
+	r.start()
+	r.waitDeploys(1)
+
+	// The passes during the deployment ask nothing: the candidate they
+	// stop at is pending on the deployment, the ones below it skipped.
+	require.Eventually(t, func() bool {
+		cs := r.m.GetState().GetReconcile().GetCandidates()
+		return len(cs) > 0 && cs[0].GetOutcome() == "pending"
+	}, time.Second, 25*time.Millisecond, "no pass during the deployment")
+	v := statusStep(t, r)
+	assert.Equal(t, "deploying", reconcileField(t, v, "state"))
+	assert.Equal(t, "", reconcileField(t, v, "reason"))
+	assertDesired(t, v, map[string]any{"commit": testing, "branch": "testing", "out_path": r.out(testing)})
+	assert.Equal(t, []string{"pending", "skipped"}, outcomes(t, v))
+	cs := reconcileField(t, v, "candidates").([]any)
+	assert.Equal(t, "deployment in flight "+testing, cs[0].(map[string]any)["reason"])
+	assert.Equal(t, "", cs[1].(map[string]any)["reason"])
+	c, _ := r.exec.CurrentSystem()
+	assert.Equal(t, oldSystem, c, "the deployment was over before the status was read")
+	// The held deployment ends before the rig's directories are removed.
+	r.waitCurrent(r.out(testing))
+}

@@ -31,6 +31,12 @@ func TestStatusRows(t *testing.T) {
 			o.InFlight, o.InFlightTarget = true, target("x")
 			return o
 		}(), Status{State: StateDeploying, Desired: target("x"), Candidates: []CandidateStatus{walkEntry("t", OutcomeAdmitted, "")}}},
+		{"a candidate not asked while a deployment is in flight", func() Observation {
+			o := obs("/out/old", cand("t", Built, nil), cand("m", Built, nil))
+			o.InFlight, o.InFlightTarget = true, target("x")
+			return o
+		}(), Status{State: StateDeploying, Desired: target("x"), Candidates: []CandidateStatus{
+			walkEntry("t", OutcomePending, "deployment in flight x"), walkEntry("m", OutcomeSkipped, "")}}},
 		{"suspended", func() Observation {
 			o := obs("/out/x", cand("t", Built, admit))
 			o.Suspended = true
@@ -52,6 +58,8 @@ func TestStatusRows(t *testing.T) {
 			o.CurrentErr = "no link"
 			return o
 		}(), Status{State: StateWaiting, Desired: target("d"), Reason: "current system unknown: no link", Candidates: admittedD}},
+		{"current unknown without an error text", obs("", d),
+			Status{State: StateWaiting, Desired: target("d"), Reason: "current system unknown", Candidates: admittedD}},
 		{"converged", obs("/out/d", d),
 			Status{State: StateConverged, Desired: target("d"), Candidates: admittedD}},
 		{"converged with a failed row for the out path", func() Observation {
@@ -172,4 +180,28 @@ func TestStatusManualRetriesABlockedOutPath(t *testing.T) {
 	assert.Equal(t, Decision{Action: Wait, Target: -1, Desired: 0, Status: Status{
 		State: StateFailed, Desired: target("d"), Reason: "deploy failed d: switch failed",
 		Candidates: []CandidateStatus{walkEntry("d", OutcomeAdmitted, "")}}, Decisive: true}, Decide(o))
+}
+
+// A walk that concludes ends a manual request, all refused included, unless
+// a deployment is in flight: the request then waits for the pass after it.
+func TestDecisiveWalkEnds(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		o    Observation
+	}{
+		{"all refused", obs("/out/x", cand("t", Built, refuse), cand("m", Built, refuse))},
+		{"a candidate failed", obs("/out/x", cand("t", Built, refuse), cand("m", BuildFailed, nil))},
+		{"no candidate", obs("/out/x")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := Decide(tt.o)
+			assert.Equal(t, Wait, d.Action)
+			assert.True(t, d.Decisive, "the walk concluded: %+v", d.Status)
+
+			tt.o.InFlight, tt.o.InFlightTarget = true, target("x")
+			d = Decide(tt.o)
+			assert.Equal(t, Wait, d.Action)
+			assert.False(t, d.Decisive, "a deployment is in flight: %+v", d.Status)
+		})
+	}
 }

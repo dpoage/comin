@@ -125,7 +125,7 @@ func New(s *store.Store,
 		triggerCh:               make(chan string, 1),
 		cache:                   map[genKey]*cached{},
 		reconcileSnapshot: statusSnapshot{
-			status: reconcile.Status{State: reconcile.StateWaiting, Reason: "no candidate"},
+			status: reconcile.Status{State: reconcile.StateWaiting, Reason: reconcile.ReasonNoCandidate},
 		},
 	}
 	m.reconcileSnapshot.since = m.startedAt
@@ -182,7 +182,7 @@ func (m *Manager) toState() *protobuf.State {
 // offers no candidate, and returns without waiting for any deployment.
 func (m *Manager) SwitchDeploymentLatest() error {
 	if len(repository.Candidates(m.Fetcher.Latest())) == 0 {
-		return fmt.Errorf("manager: no candidate")
+		return fmt.Errorf("manager: %s", reconcile.ReasonNoCandidate)
 	}
 	select {
 	case m.triggerCh <- reconcile.TriggerManual:

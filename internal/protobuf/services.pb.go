@@ -865,8 +865,11 @@ type ReconcileCandidate struct {
 	OutPath string `protobuf:"bytes,4,opt,name=out_path,json=outPath" json:"out_path,omitempty"`
 	// outcome is one of admitted, refused, failed, pending or skipped
 	Outcome string `protobuf:"bytes,5,opt,name=outcome" json:"outcome,omitempty"`
-	// reason is the preflight line of a refusal, comin's line of a failure
-	// or of pending progress; empty for admitted and skipped
+	// reason is the preflight line of a refusal, comin's line of a failure,
+	// comin's progress line of a pending candidate (evaluating, building or
+	// awaiting build confirmation <sha>; deployment in flight <sha> when it
+	// is not asked because a deployment of <sha> is in flight); empty for
+	// admitted and skipped
 	Reason        string `protobuf:"bytes,6,opt,name=reason" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
