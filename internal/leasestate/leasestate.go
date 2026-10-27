@@ -166,17 +166,18 @@ func (s *State) commit() error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	// Best-effort: after a successful rename the path no longer exists.
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	if _, err := tmp.Write(buf); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Chmod(0644); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -189,7 +190,7 @@ func (s *State) commit() error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
 

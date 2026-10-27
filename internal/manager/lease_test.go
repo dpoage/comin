@@ -267,7 +267,7 @@ func TestC1DisabledLeavesDecisionUnchanged(t *testing.T) {
 	// lease file materializing at that (unconfigured) path changes
 	// nothing (Preserve).
 	f := newLeaseFixture(t, nil)
-	f.Manager.leaseReader = lease.NewReader("")
+	f.leaseReader = lease.NewReader("")
 	f.writeLease(t, "git")
 	_, ok := f.leaseDeployDecision(mainGeneration("m2", "/nix/store/m2"))
 	assert.True(t, ok)
@@ -514,7 +514,7 @@ func TestC3DoesNotReleaseWhileDeploymentInFlight(t *testing.T) {
 	x1 := d.Deployment()
 	assert.NoError(t, ls.MarkLeaseAware(x1.Uuid))
 
-	os.Remove(leasePath)
+	assert.NoError(t, os.Remove(leasePath))
 	m.releaseEndedOverrides()
 	assert.False(t, ls.IsReleased(x1.Uuid), "must not release while the post-deployment command is still running")
 
@@ -619,7 +619,7 @@ func TestDriftStatusSinceIsPersistedAcrossReload(t *testing.T) {
 	// Simulate a comin restart: reload leasestate from the same file.
 	reloaded, err := leasestate.Load(f.leaseStatePath)
 	assert.NoError(t, err)
-	f.Manager.leaseState = reloaded
+	f.leaseState = reloaded
 
 	d2 := f.driftStatus(now.Add(5 * time.Minute))
 	assert.Equal(t, "leaseless", d2.State)
