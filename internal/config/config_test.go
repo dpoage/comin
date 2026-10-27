@@ -14,6 +14,7 @@ func TestConfig(t *testing.T) {
 		StateDir:              "/var/lib/comin",
 		StateFilepath:         "/var/lib/comin/state.json",
 		PostDeploymentCommand: "/some/path",
+		PreflightTimeout:      60,
 		RepositoryType:        "flake",
 		RepositorySubdir:      ".",
 		Remotes: []types.Remote{

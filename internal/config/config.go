@@ -44,9 +44,24 @@ func Read(path string) (config types.Configuration, err error) {
 		if remote.Branches.Testing.Operation == "" {
 			config.Remotes[i].Branches.Testing.Operation = "test"
 		}
-
+		supportedOperations := []string{"switch", "test"}
+		if !slices.Contains(supportedOperations, config.Remotes[i].Branches.Main.Operation) {
+			return config, fmt.Errorf("config: remote '%s': branches.main.operation is '%s' while comin converges the running system and an operation that does not activate it never converges: it must be one of '%s'", remote.Name, config.Remotes[i].Branches.Main.Operation, supportedOperations)
+		}
+		if !slices.Contains(supportedOperations, config.Remotes[i].Branches.Testing.Operation) {
+			return config, fmt.Errorf("config: remote '%s': branches.testing.operation is '%s' while comin converges the running system and an operation that does not activate it never converges: it must be one of '%s'", remote.Name, config.Remotes[i].Branches.Testing.Operation, supportedOperations)
+		}
 	}
 
+	if config.PreflightCommand != "" && !filepath.IsAbs(config.PreflightCommand) {
+		return config, fmt.Errorf("config: preflight_command is '%s' while it must be an absolute path", config.PreflightCommand)
+	}
+	if config.PreflightTimeout < 0 {
+		return config, fmt.Errorf("config: preflight_timeout is '%d' seconds while it must be a positive number of seconds", config.PreflightTimeout)
+	}
+	if config.PreflightTimeout == 0 {
+		config.PreflightTimeout = 60
+	}
 	if config.ApiServer.ListenAddress == "" {
 		config.ApiServer.ListenAddress = "127.0.0.1"
 	}

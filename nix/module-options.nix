@@ -152,9 +152,14 @@ in {
                           description = "The name of the main branch.";
                         };
                         operation = mkOption {
-                          type = enum ["switch" "test" "boot"];
+                          type = enum ["switch" "test"];
                           default = "switch";
-                          description = "The switch-to-configuration operation to do on this branch.";
+                          description = ''
+                            The switch-to-configuration operation on this
+                            branch. comin converges the running system; an
+                            operation that does not activate it, such as
+                            `boot`, never converges and is not offered.
+                          '';
                         };
                       };
                     };
@@ -171,9 +176,14 @@ in {
                           description = "The name of the testing branch.";
                         };
                         operation = mkOption {
-                          type = enum ["switch" "test" "boot"];
+                          type = enum ["switch" "test"];
                           default = "test";
-                          description = "The switch-to-configuration operation to do on this branch.";
+                          description = ''
+                            The switch-to-configuration operation on this
+                            branch. comin converges the running system; an
+                            operation that does not activate it, such as
+                            `boot`, never converges and is not offered.
+                          '';
                         };
                       };
                     };
@@ -239,6 +249,31 @@ in {
         example = lib.literalExpression ''
           pkgs.writers.writeBash "post" "echo $COMIN_GIT_SHA";
         '';
+      };
+      preflightCommand = mkOption {
+        description = ''
+          An absolute path to a command run before comin activates a
+          candidate and on every reconcile tick for each candidate
+          comin considers. Exit 0 admits; anything else (nonzero,
+          killed, cannot start, timeout) refuses. The first stdout
+          line is the refusal reason shown by `comin status`.
+          Environment: COMIN_OUT_PATH, COMIN_GIT_SHA, COMIN_GIT_REF
+          (<remote>/<branch>), COMIN_GIT_MSG, COMIN_BRANCH
+          (`main`|`testing`), COMIN_OPERATION, COMIN_CURRENT_SYSTEM,
+          COMIN_TRIGGER (`poll`|`manual`), COMIN_HOSTNAME. When null,
+          comin admits every candidate and this fork reverts any
+          out-of-band change of the running system at the next tick.
+        '';
+        type = nullOr path;
+        default = null;
+      };
+      preflightTimeout = mkOption {
+        description = ''
+          Seconds before comin kills the preflight run (its process
+          group) and counts it as a refusal.
+        '';
+        type = types.ints.positive;
+        default = 60;
       };
       buildConfirmer = mkOption {
         description = "The confirmer options for the build.";
