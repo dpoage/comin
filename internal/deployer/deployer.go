@@ -21,7 +21,15 @@ const (
 
 type DeployFunc func(context.Context, string, string) (bool, string, error)
 
+// PreActivation is called on the runner goroutine after a submitted
+// generation is dequeued and before its deployment is recorded. Returning
+// false skips the deployment: nothing is recorded and the deployer waits for
+// the next submission.
+type PreActivation func(ctx context.Context, generation *protobuf.Generation, operation string) bool
+
 type Deployer struct {
+	preActivation      PreActivation
+	abandoned          func(*protobuf.Generation)
 	GenerationCh       chan *protobuf.Generation
 	deployerFunc       DeployFunc
 	DeploymentDoneCh   chan *protobuf.Deployment
@@ -127,7 +135,11 @@ func New(store *store.Store, deployFunc DeployFunc, previousDeployment *protobuf
 	return deployer
 }
 
+// Suspend takes the lock the runner holds while it decides to record a
+// deployment: once Suspend returns, no deployment starts until Resume.
 func (d *Deployer) Suspend() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.isSuspended.Store(true)
 }
 
@@ -141,32 +153,28 @@ func (d *Deployer) Resume() {
 	}
 }
 
-func (d *Deployer) IsAlreadyDeployed(generation *protobuf.Generation) bool {
-	previous := d.previousDeployment.Load()
-	if previous == nil || generation.SelectedCommitId != previous.Generation.SelectedCommitId || generation.SelectedBranchIsTesting.GetValue() != previous.Generation.SelectedBranchIsTesting.GetValue() {
-		return false
-	} else {
-		logrus.Infof("deployer: skipping deployment of the generation %s because it is the same than the last deployment", generation.Uuid)
-		return true
-	}
+// SetPreActivation installs check, run before every deployment, and
+// abandoned, called on the runner goroutine with a generation check
+// admitted while the deployer got suspended: it is not deployed. Both are
+// required; SetPreActivation must be called before Run.
+func (d *Deployer) SetPreActivation(check PreActivation, abandoned func(*protobuf.Generation)) {
+	d.preActivation = check
+	d.abandoned = abandoned
 }
 
 // Submit submits a generation to be deployed. If a deployment is
 // running, this generation will be deployed once the current
-// deployment is finished. If this generation is the same than the one
-// of the last deployment, this generation is skipped.
+// deployment is finished, replacing a generation still waiting.
 func (d *Deployer) Submit(generation *protobuf.Generation, operation string) {
 	logrus.Infof("deployer: submitting generation %s with operation %s", generation.Uuid, operation)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if !d.IsAlreadyDeployed(generation) {
-		d.GenerationToDeploy = generation
-		d.Operation = operation
-		select {
-		case d.generationAvailableCh <- struct{}{}:
-		default:
-		}
+	d.GenerationToDeploy = generation
+	d.Operation = operation
+	select {
+	case d.generationAvailableCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -175,21 +183,38 @@ func (d *Deployer) Run(ctx context.Context) {
 		for {
 			<-d.generationAvailableCh
 
-			if d.isSuspended.Load() {
+			d.mu.Lock()
+			for d.isSuspended.Load() {
+				d.mu.Unlock()
 				d.runnerIsSuspended.Store(true)
 				<-d.resumeCh
 				d.runnerIsSuspended.Store(false)
+				d.mu.Lock()
 			}
-
-			d.mu.Lock()
 			g := d.GenerationToDeploy
 			operation := d.Operation
 			d.GenerationToDeploy = nil
-			d.mu.Unlock()
+			if g == nil {
+				d.mu.Unlock()
+				continue
+			}
+			if d.preActivation != nil {
+				d.mu.Unlock()
+				if !d.preActivation(ctx, g, operation) {
+					logrus.Infof("deployer: generation %s is not deployed: the pre-activation check refused it", g.Uuid)
+					continue
+				}
+				d.mu.Lock()
+				if d.isSuspended.Load() {
+					d.mu.Unlock()
+					logrus.Infof("deployer: generation %s is not deployed: the deployer was suspended during the pre-activation check", g.Uuid)
+					d.abandoned(g)
+					continue
+				}
+			}
 			logrus.Infof("deployer: deploying generation %s with operation %s", g.Uuid, operation)
 
-			dpl := d.store.NewDeployment(g, d.Operation, d.Reason)
-			d.mu.Lock()
+			dpl := d.store.NewDeployment(g, operation, d.Reason)
 			d.previousDeployment.Swap(d.Deployment())
 			d.deployment.Store(dpl)
 			d.isDeploying.Store(true)

@@ -73,12 +73,6 @@ func TestFetchRemotesRunsTheFirstFetchAtStart(t *testing.T) {
 	assert.Nil(t, err)
 	f := fetcher.NewFetcher(repo)
 	f.Start(t.Context())
-	// The selection-change emissions of the fetcher are not under test
-	// here; drain them so the fetcher loop never blocks on a send.
-	go func() {
-		for range f.RepositoryStatusCh {
-		}
-	}()
 
 	s := New()
 	s.FetchRemotes(f, gitConfig.Remotes)

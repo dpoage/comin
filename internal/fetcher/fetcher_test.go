@@ -30,8 +30,8 @@ func TestFetcher(t *testing.T) {
 			SelectedCommitId: commitId,
 		}
 		assert.EventuallyWithT(t, func(c *assert.CollectT) {
-			rs := <-f.RepositoryStatusCh
-			assert.Equal(c, commitId, rs.SelectedCommitId)
+			<-f.Fetched()
+			assert.Equal(c, commitId, f.Latest().SelectedCommitId)
 		}, 5*time.Second, 100*time.Millisecond, "fetcher failed to fetch")
 
 		assert.False(t, f.IsFetching())
@@ -42,8 +42,8 @@ func TestFetcher(t *testing.T) {
 		SelectedCommitId: "id-5",
 	}
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		rs := <-f.RepositoryStatusCh
-		assert.Equal(c, "id-5", rs.SelectedCommitId)
+		<-f.Fetched()
+		assert.Equal(c, "id-5", f.Latest().SelectedCommitId)
 	}, 5*time.Second, 100*time.Millisecond, "fetcher failed to fetch")
 
 	r.RsCh <- &protobuf.RepositoryStatus{
@@ -52,8 +52,7 @@ func TestFetcher(t *testing.T) {
 	r.RsCh <- &protobuf.RepositoryStatus{
 		SelectedCommitId: "id-6",
 	}
-	rs := <-f.RepositoryStatusCh
-	assert.NotEqual(t, "id-5", rs.SelectedCommitId)
+	assert.Eventually(t, func() bool { return f.Latest().SelectedCommitId != "id-5" }, 5*time.Second, 50*time.Millisecond)
 }
 
 // TestFetcherFetchedSignal asserts a signal is delivered after every
@@ -81,13 +80,12 @@ func TestFetcherFetchedSignal(t *testing.T) {
 		SelectedCommitMsg: "changed",
 	}
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		rs := <-f.RepositoryStatusCh
-		assert.Equal(c, "id-1", rs.SelectedCommitId)
+		assert.Equal(c, "id-1", f.Latest().SelectedCommitId)
 	}, 5*time.Second, 100*time.Millisecond, "fetcher failed to fetch")
 	awaitFetched(t, f)
 	assert.Equal(t, "changed", f.Latest().SelectedCommitMsg)
 
-	// A fetch that changes nothing: no emission, a signal, Latest is
+	// A fetch that changes nothing: a signal, Latest is
 	// the new status.
 	f.TriggerFetch([]string{"remote"})
 	r.RsCh <- &protobuf.RepositoryStatus{
@@ -96,8 +94,8 @@ func TestFetcherFetchedSignal(t *testing.T) {
 	}
 	awaitFetched(t, f)
 	select {
-	case rs := <-f.RepositoryStatusCh:
-		t.Fatalf("RepositoryStatusCh emitted on an unchanged selection: %v", rs)
+	case <-f.Fetched():
+		t.Fatal("a second Fetched signal for one completed fetch")
 	case <-time.After(500 * time.Millisecond):
 	}
 
@@ -114,38 +112,11 @@ func TestFetcherFetchedSignal(t *testing.T) {
 	awaitFetched(t, f)
 	assert.Equal(t, "'git fetch remote' fails", f.Latest().Remotes[0].FetchErrorMsg)
 	select {
-	case rs := <-f.RepositoryStatusCh:
-		t.Fatalf("RepositoryStatusCh emitted on a failed fetch: %v", rs)
+	case <-f.Fetched():
+		t.Fatal("a second Fetched signal for one completed fetch")
 	case <-time.After(500 * time.Millisecond):
 	}
 	assert.False(t, f.IsFetching())
-}
-
-// TestFetcherLatestDoesNotWaitOnRepositoryStatusCh asserts the fetch
-// signal and Latest are available while a RepositoryStatusCh emission
-// of the same fetch is still unconsumed.
-func TestFetcherLatestDoesNotWaitOnRepositoryStatusCh(t *testing.T) {
-	r := utils.NewRepositoryMock()
-	f := NewFetcher(r)
-	f.Start(t.Context())
-
-	f.TriggerFetch([]string{"remote"})
-	r.RsCh <- &protobuf.RepositoryStatus{
-		SelectedCommitId:  "id-1",
-		SelectedCommitMsg: "pending emission",
-	}
-	// Nobody reads f.RepositoryStatusCh.
-	awaitFetched(t, f)
-	latest := make(chan *protobuf.RepositoryStatus, 1)
-	go func() { latest <- f.Latest() }()
-	select {
-	case rs := <-latest:
-		assert.Equal(t, "pending emission", rs.SelectedCommitMsg)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Latest blocks while a RepositoryStatusCh emission is unconsumed")
-	}
-	// Release the fetcher goroutine blocked on the emission.
-	<-f.RepositoryStatusCh
 }
 
 // awaitFetched fails the test unless the fetcher signals a completed

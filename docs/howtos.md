@@ -94,3 +94,29 @@ services.comin = {
 ```
 
 Please note this is currently not supported by for nix-darwin configurations.
+
+## How comin reconciles the running system with git
+
+comin is level-triggered: on every tick (30 seconds) and after every
+fetch, build and deployment, it compares the running system
+(`/run/current-system`) with the configuration the repository says
+should run, and deploys it when they differ.
+
+The candidates are the head of the `testing-<hostname>` branch (when
+it is selected) and then the head of the `main` branch. comin only
+evaluates and builds the head of the `main` branch when the testing
+head is refused or failed. The first candidate admitted by the
+`services.comin.preflightCommand` is the one comin deploys, with the
+operation configured for its branch. When no command is configured,
+every candidate is admitted.
+
+A candidate whose latest finished deployment of the same system failed
+is not deployed again automatically, except once after a comin restart
+interrupted it; `comin switch-latest` still deploys it on request.
+
+**Fork behaviour**: when `services.comin.preflightCommand` is `null`,
+comin reverts a change made outside of comin (`nixos-rebuild`, a
+closure activated by hand, ...) at the next tick, without any new
+commit. Upstream comin only deploys when a new commit is fetched. To
+let a machine run something else than the repository, set a preflight
+command that refuses the candidates while that is wanted.
