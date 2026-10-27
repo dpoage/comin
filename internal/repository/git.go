@@ -117,6 +117,9 @@ func fetch(r repository, remote types.Remote) (err error) {
 	logrus.Debugf("Fetching remote '%s'", remote.Name)
 	fetchOptions := git.FetchOptions{
 		RemoteName: remote.Name,
+		// Remote-tracking refs of branches deleted on the remote must go,
+		// or an ended testing branch is selected again from a stale ref.
+		Prune: true,
 	}
 	// TODO: support several authentication methods
 	if remote.Auth.AccessToken != "" {

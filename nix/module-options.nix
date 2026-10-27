@@ -231,12 +231,91 @@ in {
         deployment. comin provides to the script the following
         environment variables: `COMIN_GIT_SHA`, `COMIN_GIT_REF`,
         `COMIN_GIT_MSG`, `COMIN_HOSTNAME`, `COMIN_FLAKE_URL`,
-        `COMIN_GENERATION`, `COMIN_STATUS` and `COMIN_ERROR_MSG`.";
+        `COMIN_GENERATION`, `COMIN_STATUS`, `COMIN_ERROR_MSG` and
+        `COMIN_OPERATION` (the deployment's operation: `switch`, `test`
+        or `boot`).";
         type = nullOr path;
         default = null;
         example = lib.literalExpression ''
           pkgs.writers.writeBash "post" "echo $COMIN_GIT_SHA";
         '';
+      };
+      overrideLeaseFile = mkOption {
+        description = "The path to a developer override lease file owned
+        by another tool. comin reads only whether the file exists and its
+        top-level `kind` field; it never parses any other field. While
+        the file exists comin deploys no main-branch generation on its
+        own; it holds back the newest one. A new testing-branch head
+        deploys only with no lease or a lease of kind `git`, and under a
+        `git` lease only when it descends from the running main commit.
+        Once the file is gone and no deployment is queued or running,
+        comin releases every testing deployment it made while this option
+        was set: it never deploys their testing-branch heads again, and it
+        never switches the machine back on its own. comin also deploys
+        only over a system it owns: the system of any successful
+        deployment still in its deployment history, the system its own
+        latest deployment activated, a failed one included, or, when there
+        is no last successful deployment (of the main branch, or under a
+        `git` lease of either branch) yet, any system. A released testing
+        deployment is never comin's, nor, once no lease is held, a testing
+        deployment that ended before comin's lease state file was found
+        unreadable. Over any other running system comin deploys nothing on
+        its own, not even a newer main-branch commit or a new
+        testing-branch head, and `comin status --json` reports the drift;
+        only `comin deployment switch-latest` deploys over it. That covers
+        an override ended without a reboot and a break-glass or closure
+        activated out of band. One generation is the exception: when no
+        deployment in comin's history owns the running system, but that
+        system is the build (out path) of the generation comin offers,
+        comin deploys that generation, for example after comin was
+        killed during an activation, before it stored the deployment.
+        The exception does not apply when the running system is the
+        system of an ended override (a released testing deployment, or
+        one counted as released). When another tool rolls the machine back to
+        one of comin's successful deployments older than the last
+        successful main-branch deployment, comin owns the running system
+        and, as long as that older deployment runs, never activates the
+        build (out path) of that last deployment on its own, neither from
+        its commit nor from a newer commit that leaves the system
+        unchanged, across a comin restart too;
+        `comin status --json` reports the drift, a newer main-branch commit
+        that builds another system deploys as usual, and `comin deployment
+        switch-latest` re-activates the deployment comin was rolled back
+        from. Deployments resume by themselves once comin owns the system
+        again (after a reboot back to one of its systems, for example), or
+        an operator runs `comin deployment switch-latest`. comin then
+        deploys the newest fetched main-branch commit, unless it is the one
+        running or builds the system comin was rolled back from, within one
+        poll and one fetch, across a comin restart too
+        — except when a testing-branch head comin refused (for example,
+        fetched while a non-git lease was held or while comin did not own
+        the running system) descends from that main-branch commit: then
+        the machine stays on its current main-branch deployment — `comin
+        status --json` reports no drift unless comin was rolled back —
+        until the main or the testing branch moves again, or until comin
+        restarts (a reboot included)
+        while it owns the system, which then deploys that testing-branch
+        head with test. A released testing-branch head
+        is never selected for deployment, so it does not hold the main
+        branch back while it is still the head of its branch, on the
+        remote or only in comin's clone. If comin's lease state file is
+        unreadable, comin never deploys the testing-branch head of a
+        testing deployment made before again, and once no lease is held
+        each such deployment counts as released. If the file is absent
+        when comin starts (comin never wrote it, or it was moved aside),
+        comin never deploys the testing-branch head of any stored testing
+        deployment again, except the head of a deployment whose system
+        runs now; comin records the exclusion in the lease state file.
+        Main-branch deployments and the systems comin owns do not change. `null`
+        disables only these lease behaviours. Whatever this option is set
+        to, `comin status --json` reports `drift`, the post-deployment
+        command gets `COMIN_OPERATION`, and `comin deployment
+        switch-latest` deploys the last successful main-branch deployment
+        (or, under a `git` lease, the last testing one) with `switch`,
+        including after a restart.";
+        type = nullOr str;
+        default = null;
+        example = "/opt/pattern/override.json";
       };
       buildConfirmer = mkOption {
         description = "The confirmer options for the build.";

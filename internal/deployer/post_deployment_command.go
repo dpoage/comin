@@ -39,6 +39,17 @@ func envCominErrorMessage(d *pb.Deployment) string {
 	return d.ErrorMsg
 }
 
+// envCominOperation returns the deployment's operation. It falls back to
+// "switch" so a caller reading this variable never sees an empty value,
+// mirroring how consumers must already treat a missing COMIN_OPERATION
+// (from a pre-fork comin) as "switch".
+func envCominOperation(d *pb.Deployment) string {
+	if d.Operation == "" {
+		return "switch"
+	}
+	return d.Operation
+}
+
 func runPostDeploymentCommand(command string, d *pb.Deployment) (string, error) {
 
 	cmd := exec.Command(command)
@@ -51,6 +62,7 @@ func runPostDeploymentCommand(command string, d *pb.Deployment) (string, error) 
 		"COMIN_GENERATION="+envCominGeneration(d),
 		"COMIN_STATUS="+envCominStatus(d),
 		"COMIN_ERROR_MSG="+envCominErrorMessage(d),
+		"COMIN_OPERATION="+envCominOperation(d),
 	)
 
 	output, err := cmd.CombinedOutput()

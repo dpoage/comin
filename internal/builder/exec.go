@@ -54,10 +54,10 @@ func (e *Exec) Start(ctx context.Context) {
 		}
 		e.started.Store(false)
 		e.finished.Store(true)
-		select {
-		case e.done <- struct{}{}:
-		default:
-		}
+		// Closed rather than sent on: a Wait that saw started before
+		// this goroutine cleared it may not be receiving yet, and a
+		// dropped send would block it forever.
+		close(e.done)
 	}()
 }
 

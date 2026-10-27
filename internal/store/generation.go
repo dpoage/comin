@@ -91,8 +91,10 @@ func StringToBuildStatus(statusStr string) BuildStatus {
 	}
 }
 
-func (s *Store) NewGeneration(hostname, repositoryPath, repositoryDir, systemAttr string, rs *protobuf.RepositoryStatus) (g protobuf.Generation) {
-	g = protobuf.Generation{
+func (s *Store) NewGeneration(hostname, repositoryPath, repositoryDir, systemAttr string, rs *protobuf.RepositoryStatus) protobuf.Generation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g := &protobuf.Generation{
 		Uuid:                    uuid.New().String(),
 		RepositoryPath:          repositoryPath,
 		RepositorySubdir:        repositoryDir,
@@ -109,8 +111,8 @@ func (s *Store) NewGeneration(hostname, repositoryPath, repositoryDir, systemAtt
 		EvalStatus:              EvalInit.String(),
 		BuildStatus:             BuildInit.String(),
 	}
-	s.data.Generations = append(s.data.Generations, &g)
-	return
+	s.data.Generations = append(s.data.Generations, g)
+	return *proto.CloneOf(g)
 }
 
 func GenerationShow(g *protobuf.Generation) {

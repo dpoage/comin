@@ -141,6 +141,17 @@ message State {
   Store store = 6;
   Confirmer build_confirmer = 7;
   Confirmer deploy_confirmer = 8;
+  Drift drift = 9;
+}
+
+// Drift describes whether the host is currently running the deployment
+// comin expects it to run, and if not, why. It is always populated: never
+// null, and "state" is always one of the four listed values.
+message Drift {
+  string expected_out_path = 1;
+  // state is one of "none", "held", "returning", "leaseless".
+  string state = 2;
+  google.protobuf.Timestamp since = 3;
 }
 
 message Deployer {

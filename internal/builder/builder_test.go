@@ -30,6 +30,9 @@ func (n ExecutorMock) NeedToReboot(_, _ string) bool {
 func (n ExecutorMock) IsStorePathExist(storePath string) bool {
 	return n.alreadyBuilt
 }
+func (n ExecutorMock) CurrentSystem() (string, error) {
+	return "", nil
+}
 func (n ExecutorMock) Deploy(ctx context.Context, outPath, operation string) (needToRestartComin bool, profilePath string, err error) {
 	return false, "", nil
 }

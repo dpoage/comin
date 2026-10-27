@@ -83,7 +83,7 @@ func TestPreferMain(t *testing.T) {
 	// r1/main: c1 - c2 - *c3
 	// r1/testing: c1 - c2 - c3
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.Equal(t, cMain, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
@@ -93,7 +93,7 @@ func TestPreferMain(t *testing.T) {
 	// r1/testing: c1 - c2 - c3 - *c4
 	c4, _ := commitFile(r1, r1Dir, "testing", "file-4")
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.Equal(t, c4, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
@@ -103,7 +103,7 @@ func TestPreferMain(t *testing.T) {
 	// r1/testing: c1 - c2 - c3 - c4
 	c4, _ = commitFile(r1, r1Dir, "main", "file-4")
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.Equal(t, c4, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
@@ -141,7 +141,7 @@ func TestMainCommitId(t *testing.T) {
 	_, _ = commitFile(r1, r1Dir, "testing", "file-4")
 	c5, _ := commitFile(r1, r1Dir, "testing", "file-5")
 	r.Fetch([]string{"r1"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c4, r.RepositoryStatus.MainCommitId)
 	assert.Equal(t, c5, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
@@ -189,7 +189,7 @@ func TestContinueIfHardReset(t *testing.T) {
 	r, _ := New(gitConfig, cMain, prometheus.New())
 
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 
 	// r1/main: c1 - c2 - ^c3
 	// r1/testing: c1 - c2 - c3
@@ -197,7 +197,7 @@ func TestContinueIfHardReset(t *testing.T) {
 	// r2/testing: c1 - c2 - c3 - *c4
 	c4, _ := commitFile(r2, r2Dir, "testing", "file-4")
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c4, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r2", r.RepositoryStatus.SelectedRemoteName)
@@ -208,7 +208,7 @@ func TestContinueIfHardReset(t *testing.T) {
 	// r2/testing: c1 - c2 - c3 - ^c4
 	c4, _ = commitFile(r2, r2Dir, "main", "file-4")
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c4, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.MainBranchName)
 	assert.Equal(t, "r2", r.RepositoryStatus.MainRemoteName)
@@ -259,7 +259,7 @@ func TestMultipleRemote(t *testing.T) {
 	// r1/main: c1 - c2 - *c3
 	// r2/main: c1 - c2 - c3
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
@@ -269,7 +269,7 @@ func TestMultipleRemote(t *testing.T) {
 	newCommitId, err := commitFile(r1, r1Dir, "main", "file-4")
 	assert.Nil(t, err)
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, newCommitId, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
@@ -280,7 +280,7 @@ func TestMultipleRemote(t *testing.T) {
 	newCommitId, err = commitFile(r2, r2Dir, "main", "file-5")
 	assert.Nil(t, err)
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, newCommitId, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r2", r.RepositoryStatus.SelectedRemoteName)
@@ -290,7 +290,7 @@ func TestMultipleRemote(t *testing.T) {
 	newCommitId, err = commitFile(r1, r1Dir, "main", "file-5")
 	assert.Nil(t, err)
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, newCommitId, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
@@ -305,7 +305,7 @@ func TestMultipleRemote(t *testing.T) {
 	_, _ = commitFile(r2, r2Dir, "testing", "file-6")
 	c7, _ := commitFile(r2, r2Dir, "testing", "file-7")
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c6, r.RepositoryStatus.MainCommitId)
 	assert.Equal(t, c7, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
@@ -315,7 +315,7 @@ func TestMultipleRemote(t *testing.T) {
 	// r2/main: c1 - c2 - c3 - c4 - c5 - c6
 	// r2/testing: c1 - c2 - c3 - c4 - c5 - c6 - *c7
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c7, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r2", r.RepositoryStatus.SelectedRemoteName)
@@ -326,7 +326,7 @@ func TestMultipleRemote(t *testing.T) {
 	// r2/testing: c1 - c2 - c3 - c4 - c5 - c6 - c7
 	c8, _ := commitFile(r1, r1Dir, "main", "file-8")
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c8, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
@@ -337,7 +337,7 @@ func TestMultipleRemote(t *testing.T) {
 	// r2/testing: c1 - c2 - c3 - c4 - c5 - c6 - c7
 	c9, _ := commitFile(r1, r1Dir, "main", "file-9")
 	r.Fetch([]string{"r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c8, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
@@ -350,7 +350,7 @@ func TestMultipleRemote(t *testing.T) {
 	// r2/main: c1 - c2 - c3 - c4 - c5 - c6
 	// r2/testing: c1 - c2 - c3 - c4 - c5 - c6 - c7
 	r.Fetch([]string{"r1"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c9, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
@@ -401,7 +401,7 @@ func TestTestingSwitch(t *testing.T) {
 	// r2/main: c1 - c2 - c3
 	// r2/testing: c1 - c2 - c3
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, cMain, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
@@ -412,7 +412,7 @@ func TestTestingSwitch(t *testing.T) {
 	// r2/testing: c1 - c2 - c3 - *c4
 	c4, _ := commitFile(r2, r2Dir, "testing", "file-4")
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c4, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r2", r.RepositoryStatus.SelectedRemoteName)
@@ -422,7 +422,7 @@ func TestTestingSwitch(t *testing.T) {
 	// r2/main: c1 - c2 - c3
 	// r2/testing: c1 - c2 - c3 - *c4
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r2", r.RepositoryStatus.SelectedRemoteName)
 	assert.Equal(t, c4, r.RepositoryStatus.SelectedCommitId)
@@ -433,7 +433,7 @@ func TestTestingSwitch(t *testing.T) {
 	// r2/testing: c1 - c2 - c3 - c4
 	_, _ = commitFile(r2, r2Dir, "main", "file-4")
 	r.Fetch([]string{"r1", "r2"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, c4, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r2", r.RepositoryStatus.SelectedRemoteName)
@@ -466,7 +466,7 @@ func TestWithoutTesting(t *testing.T) {
 	r, _ := New(gitConfig, "", prometheus.New())
 
 	r.Fetch([]string{"r1"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
@@ -500,14 +500,14 @@ func TestRepositoryUpdateMain(t *testing.T) {
 
 	// The remote repository is initially checkouted
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
 
 	// Without any new remote commits, the local repository is not updated
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -516,7 +516,7 @@ func TestRepositoryUpdateMain(t *testing.T) {
 	// repository is updated
 	newCommitId, _ := commitFile(remoteRepository, remoteRepositoryDir, "main", "file-4")
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, newCommitId, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -525,7 +525,7 @@ func TestRepositoryUpdateMain(t *testing.T) {
 	// behind the main branch: the repository is not updated
 	_, _ = commitFile(remoteRepository, remoteRepositoryDir, "testing", "file-5")
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, newCommitId, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -559,7 +559,7 @@ func TestRepositoryUpdateHardResetMain(t *testing.T) {
 
 	// The remote repository is initially checkouted
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -570,7 +570,7 @@ func TestRepositoryUpdateHardResetMain(t *testing.T) {
 	newCommitId, _ := commitFile(remoteRepository, remoteRepositoryDir, "main", "file-5")
 
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, newCommitId, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -583,7 +583,7 @@ func TestRepositoryUpdateHardResetMain(t *testing.T) {
 		return
 	}
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, newCommitId, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -618,7 +618,7 @@ func TestRepositoryUpdateTesting(t *testing.T) {
 
 	// The remote repository is initially checkouted on main
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -627,7 +627,7 @@ func TestRepositoryUpdateTesting(t *testing.T) {
 	// repository is updated
 	commitId4, _ := commitFile(remoteRepository, remoteRepositoryDir, "testing", "file-4")
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, commitId4, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -636,7 +636,7 @@ func TestRepositoryUpdateTesting(t *testing.T) {
 	// repository is updated
 	commitId5, _ := commitFile(remoteRepository, remoteRepositoryDir, "testing", "file-5")
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, commitId5, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -652,7 +652,7 @@ func TestRepositoryUpdateTesting(t *testing.T) {
 		return
 	}
 	r.Fetch([]string{"origin"})
-	_ = r.Update()
+	_ = r.Update(nil)
 	assert.Equal(t, commitId5, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
@@ -687,7 +687,7 @@ func TestTestingHardReset(t *testing.T) {
 	// r1/main: c1 - c2 - *c3
 	// r1/testing: c1 - c2 - c3
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.Equal(t, cMain, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
@@ -697,7 +697,7 @@ func TestTestingHardReset(t *testing.T) {
 	// r1/testing: c1 - c2 - c3 - *c4
 	c4, _ := commitFile(r1, r1Dir, "testing", "file-4")
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.Equal(t, c4, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "testing", r.RepositoryStatus.SelectedBranchName)
@@ -708,7 +708,7 @@ func TestTestingHardReset(t *testing.T) {
 	ref := plumbing.NewHashReference("refs/heads/testing", plumbing.NewHash(cMain))
 	_ = r1.Storer.SetReference(ref)
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.Equal(t, cMain, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
@@ -745,7 +745,7 @@ func TestUpdateGpg(t *testing.T) {
 	r, err := New(gitConfig, "", prometheus.New())
 	assert.Nil(t, err)
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.Equal(t, cMain, r.RepositoryStatus.SelectedCommitId)
 	assert.True(t, r.RepositoryStatus.SelectedCommitSigned.GetValue())
@@ -754,7 +754,7 @@ func TestUpdateGpg(t *testing.T) {
 
 	_, _ = commitFile(r1, dir, "main", "file-2")
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.Equal(t, HeadCommitId(r1), r.RepositoryStatus.SelectedCommitId)
 	assert.False(t, r.RepositoryStatus.SelectedCommitSigned.GetValue())
@@ -780,7 +780,7 @@ func TestUpdateGpg(t *testing.T) {
 	r, err = New(gitConfig, "", prometheus.New())
 	assert.Nil(t, err)
 	r.Fetch([]string{"r1"})
-	err = r.Update()
+	err = r.Update(nil)
 	assert.Nil(t, err)
 	assert.False(t, r.RepositoryStatus.SelectedCommitSigned.GetValue())
 	assert.Equal(t, "", r.RepositoryStatus.SelectedCommitSignedBy)

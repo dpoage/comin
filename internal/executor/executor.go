@@ -23,6 +23,9 @@ type Executor interface {
 	// IsStorePathExist returns true if a storepath exists. This
 	// is used to detect if a build will be required or not.
 	IsStorePathExist(string) bool
+	// CurrentSystem returns the store path the host is currently
+	// running, or "" when that is unknown (e.g. nothing deployed yet).
+	CurrentSystem() (string, error)
 }
 
 func NewNixOSFlake() (e Executor, err error) {

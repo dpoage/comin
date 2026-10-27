@@ -1,0 +1,886 @@
+package manager
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/nlewo/comin/internal/broker"
+	"github.com/nlewo/comin/internal/builder"
+	"github.com/nlewo/comin/internal/deployer"
+	"github.com/nlewo/comin/internal/fetcher"
+	"github.com/nlewo/comin/internal/lease"
+	"github.com/nlewo/comin/internal/leasestate"
+	"github.com/nlewo/comin/internal/prometheus"
+	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/scheduler"
+	"github.com/nlewo/comin/internal/store"
+	"github.com/nlewo/comin/internal/utils"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+)
+
+// controllableExecutor is a lease-test Executor double that lets a test set
+// what /run/current-system currently resolves to, and which system a
+// commit builds.
+type controllableExecutor struct {
+	mu      sync.Mutex
+	current string
+	outs    map[string]string
+}
+
+func (e *controllableExecutor) set(current string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.current = current
+}
+
+func (e *controllableExecutor) get() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.current
+}
+
+// buildsAs makes commit build out, as a commit that leaves this host's
+// system unchanged builds the system of its parent.
+func (e *controllableExecutor) buildsAs(commit, out string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.outs == nil {
+		e.outs = map[string]string{}
+	}
+	e.outs[commit] = out
+}
+
+func (e *controllableExecutor) ReadMachineId() (string, error) { return "", nil }
+func (e *controllableExecutor) NeedToReboot(_, _ string) bool  { return false }
+func (e *controllableExecutor) IsStorePathExist(string) bool   { return false }
+func (e *controllableExecutor) CurrentSystem() (string, error) { return e.get(), nil }
+func (e *controllableExecutor) Deploy(ctx context.Context, outPath, operation string) (bool, string, error) {
+	return false, "", nil
+}
+// Eval derives the out path from the commit, so a fetched commit C
+// deploys /nix/store/C, unless buildsAs says otherwise.
+func (e *controllableExecutor) Eval(ctx context.Context, repositoryPath, repositorySubdir, commitId, systemAttr, hostname string) (string, string, string, error) {
+	e.mu.Lock()
+	out, ok := e.outs[commitId]
+	e.mu.Unlock()
+	if !ok {
+		out = "/nix/store/" + commitId
+	}
+	return "/nix/store/drv-" + commitId, out, "", nil
+}
+func (e *controllableExecutor) Build(ctx context.Context, drvPath string) error { return nil }
+
+// leaseFixture wires a real Manager (same construction path as
+// cmd/run.go and manager_test.go) for the C1/C2/C3/C5/C7 tests: a real
+// store and deployer (so Submit/SubmitLatest genuinely run deployments
+// through the deployer's own goroutine), a controllable executor (so tests
+// can set "current"), and a lease reader/state rooted in a scratch dir.
+type leaseFixture struct {
+	*Manager
+	exec           *controllableExecutor
+	leasePath      string
+	leaseStatePath string
+	store          *store.Store
+	drainStop      chan struct{}
+}
+
+func newLeaseFixture(t *testing.T, previousDeployment *protobuf.Deployment) *leaseFixture {
+	t.Helper()
+	tmp := t.TempDir()
+	bk := broker.New()
+	bk.Start()
+	s, err := store.New(bk, filepath.Join(tmp, "state.json"), filepath.Join(tmp, "gcroots"), 10, 10)
+	assert.NoError(t, err)
+	leaseStatePath := filepath.Join(tmp, "lease-state.json")
+	ls, err := leasestate.Load(leaseStatePath)
+	assert.NoError(t, err)
+	leasePath := filepath.Join(tmp, "override.json")
+
+	exec := &controllableExecutor{}
+	// Like switch-to-configuration, a deployment repoints the current
+	// system.
+	deployFunc := func(_ context.Context, outPath, _ string) (bool, string, error) {
+		exec.set(outPath)
+		return false, "", nil
+	}
+	d := deployer.New(s, deployFunc, previousDeployment, "")
+	d.Run(t.Context())
+	// Manager.Run() normally drains DeploymentDoneCh (buffered, size 1);
+	// without a consumer here, a second deployment's completion would
+	// block the deployer's goroutine forever on that send. Tests that
+	// call f.Run() themselves stop this via f.stopAutoDrain().
+	drainStop := make(chan struct{})
+	drainDeployments(t, d, s, drainStop)
+
+	b := builder.New(s, exec, "", "", "", "host", time.Second, time.Second)
+	fe := fetcher.NewFetcher(utils.NewRepositoryMock())
+	bc := NewConfirmer(bk, Without, 0, "")
+	bc.Start()
+	dc := NewConfirmer(bk, Without, 0, "")
+	dc.Start()
+
+	m := New(s, prometheus.New(), scheduler.New(), fe, b, d, "", exec, bc, dc, bk, emptyConfigurationOperations, lease.NewReader(leasePath), ls)
+	return &leaseFixture{Manager: m, exec: exec, leasePath: leasePath, leaseStatePath: leaseStatePath, store: s, drainStop: drainStop}
+}
+
+// stopAutoDrain stops the fixture's background DeploymentDoneCh drain, for
+// tests that call f.Run() and need to drain it themselves instead.
+func (f *leaseFixture) stopAutoDrain() {
+	close(f.drainStop)
+}
+
+// deployerQuiet reports whether d writes nothing more: no deployment in
+// flight, and none it will start (a suspended deployer starts nothing).
+func deployerQuiet(d *deployer.Deployer) bool {
+	inFlight, queued := d.Activity()
+	return !inFlight && (!queued || d.IsSuspended())
+}
+
+// drainDeployments stands in for Manager.Run's DeploymentDoneCh handler,
+// committing each finished deployment to s, until the test ends or stop
+// is closed. Its cleanup, registered after the test's TempDir, waits
+// until d and the drain are done writing into it.
+func drainDeployments(t *testing.T, d *deployer.Deployer, s *store.Store, stop <-chan struct{}) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-t.Context().Done():
+				return
+			case <-stop:
+				return
+			case dpl := <-d.DeploymentDoneCh:
+				s.DeploymentInsertAndCommit(dpl)
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		waitFor(t, func() bool { return deployerQuiet(d) }, "the deployer is quiet")
+		<-done
+	})
+}
+
+// runManager runs m's loop until the test ends. Its cleanup waits until
+// the loop has returned and m's deployer is quiet, so neither writes into
+// the test's TempDir once it is removed.
+func runManager(t *testing.T, m *Manager) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Run(t.Context())
+	}()
+	t.Cleanup(func() {
+		<-done
+		waitFor(t, func() bool { return deployerQuiet(m.deployer) }, "the deployer is quiet")
+	})
+}
+
+func (f *leaseFixture) writeLease(t *testing.T, kind string) {
+	t.Helper()
+	content := `{"version":1,"kind":"` + kind + `"}`
+	assert.NoError(t, os.WriteFile(f.leasePath, []byte(content), 0644))
+}
+
+func (f *leaseFixture) removeLease() {
+	_ = os.Remove(f.leasePath)
+}
+
+// submitAndWait submits g through the real deployer and waits for the
+// deployer to finish deploying it, returning the resulting deployment.
+func submitAndWait(t *testing.T, f *leaseFixture, g *protobuf.Generation, operation string) *protobuf.Deployment {
+	t.Helper()
+	f.deployer.Submit(g, operation)
+	var dpl *protobuf.Deployment
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		dpl = f.deployer.Deployment()
+		if !assert.NotNil(c, dpl) {
+			return
+		}
+		assert.Equal(c, g.SelectedCommitId, dpl.Generation.SelectedCommitId)
+		assert.False(c, f.deployer.IsDeploying())
+	}, 3*time.Second, 20*time.Millisecond)
+	return dpl
+}
+
+func mainGeneration(commit, outPath string) *protobuf.Generation {
+	return &protobuf.Generation{
+		Uuid:                    "gen-" + commit,
+		SelectedCommitId:        commit,
+		SelectedRemoteName:      "origin",
+		SelectedBranchName:      "main",
+		SelectedBranchIsTesting: wrapperspb.Bool(false),
+		MainCommitId:            commit,
+		OutPath:                 outPath,
+	}
+}
+
+func testingGeneration(commit, mainCommit string) *protobuf.Generation {
+	return &protobuf.Generation{
+		Uuid:                    "gen-" + commit,
+		SelectedCommitId:        commit,
+		SelectedRemoteName:      "origin",
+		SelectedBranchName:      "testing-r1",
+		SelectedBranchIsTesting: wrapperspb.Bool(true),
+		MainCommitId:            mainCommit,
+		OutPath:                 "/nix/store/" + commit,
+	}
+}
+
+func marshalStatus(t *testing.T, s *protobuf.State) string {
+	t.Helper()
+	marshaler := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}
+	buf, err := marshaler.Marshal(s)
+	assert.NoError(t, err)
+	return string(buf)
+}
+
+// ---------------------------------------------------------------------
+// C1: Freeze
+// ---------------------------------------------------------------------
+
+func TestC1FreezeBlocksMainDeploymentWhileLeaseHeld(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	f.writeLease(t, "git")
+	_, ok := f.leaseDeployDecision(mainGeneration("m2", "/nix/store/m2"))
+	assert.False(t, ok, "a main generation must not deploy while a lease is held")
+}
+
+func TestC1AllowsMainDeploymentWithoutLease(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	_, ok := f.leaseDeployDecision(mainGeneration("m2", "/nix/store/m2"))
+	assert.True(t, ok)
+}
+
+func TestC1DisabledLeavesDecisionUnchanged(t *testing.T) {
+	// overrideLeaseFile null: the lease reader is disabled, so even a
+	// lease file materializing at that (unconfigured) path changes
+	// nothing (Preserve).
+	f := newLeaseFixture(t, nil)
+	f.leaseReader = lease.NewReader("")
+	f.writeLease(t, "git")
+	_, ok := f.leaseDeployDecision(mainGeneration("m2", "/nix/store/m2"))
+	assert.True(t, ok)
+}
+
+// ---------------------------------------------------------------------
+// C2: Kind gate
+// ---------------------------------------------------------------------
+
+func TestC2SessionAndClosureBlockTestingHead(t *testing.T) {
+	for _, kind := range []string{"session", "closure"} {
+		f := newLeaseFixture(t, nil)
+		f.writeLease(t, kind)
+		_, ok := f.leaseDeployDecision(testingGeneration("t1", ""))
+		assert.False(t, ok, "kind %s must block a new testing head", kind)
+	}
+}
+
+func TestC2GitOrNoLeaseDeploysDescendantTestingHead(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	// No held main yet: the descent check is a no-op.
+	op, ok := f.leaseDeployDecision(testingGeneration("t1", "m1"))
+	assert.True(t, ok)
+	assert.Equal(t, "test", op)
+
+	f.writeLease(t, "git")
+	op, ok = f.leaseDeployDecision(testingGeneration("t2", "m1"))
+	assert.True(t, ok)
+	assert.Equal(t, "test", op)
+}
+
+// ---------------------------------------------------------------------
+// C3: Release
+// ---------------------------------------------------------------------
+
+// distinctSwitchDeploymentsOf counts distinct deployment UUIDs in the store
+// deploying commit with operation "switch" (store.DeploymentList can
+// contain duplicate rows for the same UUID - a pre-existing, out-of-scope
+// store.go quirk - so this dedupes by UUID).
+func distinctSwitchDeploymentsOf(f *leaseFixture, commit string) int {
+	seen := map[string]bool{}
+	for _, d := range f.store.DeploymentList() {
+		if d.Operation == "switch" && d.Generation.GetSelectedCommitId() == commit {
+			seen[d.Uuid] = true
+		}
+	}
+	return len(seen)
+}
+
+// Every lease-aware testing deployment is released, the older extend
+// included, and nothing is deployed. Mutants: release only the current
+// deployment; release a deployment with no lease-aware mark; return.
+func TestC3ReleasesAllLeaseAwareTestingDeploysWithoutReturning(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	m := mainGeneration("m1", "/nix/store/m1")
+	f.store.DeploymentInsert(&protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+	})
+	seeded := distinctSwitchDeploymentsOf(f, "m1")
+	f.exec.set("/nix/store/m1") // the machine runs m1
+	f.writeLease(t, "git")
+
+	x1 := submitAndWait(t, f, testingGeneration("t1", "m1"), "test")
+	assert.NoError(t, f.leaseState.MarkLeaseAware(x1.Uuid))
+	// Extend: a second testing deployment on the same branch.
+	x2 := submitAndWait(t, f, testingGeneration("t2", "m1"), "test")
+	assert.NoError(t, f.leaseState.MarkLeaseAware(x2.Uuid))
+
+	// A legacy deployment on the same branch, made by pre-round comin:
+	// no lease-aware mark.
+	legacy := &protobuf.Deployment{
+		Uuid:       "legacy-t0",
+		Operation:  "test",
+		Status:     store.StatusToString(store.Done),
+		Generation: testingGeneration("t0", "m1"),
+	}
+	f.store.DeploymentInsert(legacy)
+
+	f.removeLease() // ended by operator: current system is still X2's, not M's.
+	f.releaseEndedOverrides()
+
+	assert.True(t, f.leaseState.IsReleased(x1.Uuid), "the older extend deployment must be released too")
+	assert.True(t, f.leaseState.IsReleased(x2.Uuid))
+	assert.False(t, f.leaseState.IsReleased(legacy.Uuid), "a pre-round deployment with no lease-aware mark must never be released")
+	assert.True(t, f.deployer.Idle(), "C3 deploys nothing")
+	assert.Equal(t, seeded, distinctSwitchDeploymentsOf(f, "m1"))
+	assert.Equal(t, "t2", f.deployer.Deployment().Generation.GetSelectedCommitId())
+	assert.Equal(t, "leaseless", f.driftStatus(time.Now()).State)
+
+	// The machine runs the ended override: no new head deploys over it
+	// until it is back on m1.
+	_, ok := f.leaseDeployDecision(testingGeneration("t3", "m1"))
+	assert.False(t, ok)
+	f.exec.set("/nix/store/m1")
+	_, ok = f.leaseDeployDecision(testingGeneration("t3", "m1"))
+	assert.True(t, ok)
+}
+
+// Mutant (a): drop the released check in expectedDeployment. Isolated from
+// TestC3Releases...: here nothing more recent than the released testing
+// deployment exists, so only the IsReleased filter can make M win.
+func TestC3ExpectedDeploymentSkipsReleasedTestingHeads(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	mDpl := &protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done),
+		Generation: mainGeneration("m1", "/nix/store/m1"),
+	}
+	f.store.DeploymentInsert(mDpl)
+	xDpl := &protobuf.Deployment{
+		Uuid: "t1-dpl", Operation: "test", Status: store.StatusToString(store.Done),
+		Generation: testingGeneration("t1", "m1"),
+	}
+	// Inserted after M: more recent in DeploymentList order.
+	f.store.DeploymentInsert(xDpl)
+	assert.NoError(t, f.leaseState.MarkLeaseAware(xDpl.Uuid))
+	assert.NoError(t, f.leaseState.Release([]string{xDpl.Uuid}))
+
+	got := f.expectedDeployment(f.store.DeploymentList(), true) // git lease live: testing counts
+	assert.NotNil(t, got)
+	assert.Equal(t, "m1", got.Generation.GetSelectedCommitId(), "a released testing deployment must never be expected again, even while testing counts")
+}
+
+func TestC3RebootEndedLeaseReleasesAndTargetsMForSwitchLatest(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		f := newLeaseFixture(t, nil)
+		m := mainGeneration("m1", "/nix/store/m1")
+		f.store.DeploymentInsert(&protobuf.Deployment{
+			Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+		})
+		seeded := distinctSwitchDeploymentsOf(f, "m1")
+		f.exec.set("/nix/store/m1") // the machine runs m1
+		f.writeLease(t, "git")
+
+		var last *protobuf.Deployment
+		for i := range n {
+			last = submitAndWait(t, f, testingGeneration("t"+string(rune('1'+i)), "m1"), "test")
+			assert.NoError(t, f.leaseState.MarkLeaseAware(last.Uuid))
+		}
+
+		// Reboot: the lease (never persisted) is gone, and
+		// /run/current-system is back to M.
+		f.removeLease()
+		f.exec.set("/nix/store/m1")
+
+		f.releaseEndedOverrides()
+		assert.Eventually(t, f.deployer.Idle, 5*time.Second, 5*time.Millisecond)
+		assert.True(t, f.leaseState.IsReleased(last.Uuid), "n=%d: C3 decided", n)
+		assert.Equal(t, seeded, distinctSwitchDeploymentsOf(f, "m1"), "n=%d: C3 never deploys", n)
+
+		drift := f.driftStatus(time.Now())
+		assert.Equal(t, "none", drift.State)
+
+		gen, err := f.resolveExpectedGeneration()
+		assert.NoError(t, err)
+		assert.Equal(t, "m1", gen.SelectedCommitId)
+	}
+}
+
+// Mutant: evaluate C3 only on fetch events. The lease is still present
+// when Run starts (so the startup poll finds nothing to release); only
+// removed afterwards, so only the periodic ticker - not a fetch event, not
+// the startup poll - can catch it.
+func TestC3NoFetchEventsReleasesWithinOnePollPeriod(t *testing.T) {
+	x1 := &protobuf.Deployment{
+		Uuid:       "t1-dpl",
+		Operation:  "test",
+		Status:     store.StatusToString(store.Done),
+		Generation: testingGeneration("t1", "m1"),
+	}
+	f := newLeaseFixture(t, x1)
+	f.stopAutoDrain()
+	m := mainGeneration("m1", "/nix/store/m1")
+	f.store.DeploymentInsert(&protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+	})
+	f.store.DeploymentInsert(x1)
+	assert.NoError(t, f.leaseState.MarkLeaseAware(x1.Uuid))
+	f.writeLease(t, "git")
+	f.exec.set("/nix/store/t1")
+
+	f.SetPollPeriod(30 * time.Millisecond)
+	runManager(t, f.Manager)
+	// The startup poll has run once it recorded the "held" drift
+	// episode; only then is the lease removed, so the startup poll cannot
+	// be the one that catches the end.
+	assert.Eventually(t, func() bool { return f.leaseState.DriftSince() != nil }, 5*time.Second, 5*time.Millisecond)
+	assert.Equal(t, "t1", f.deployer.Deployment().Generation.GetSelectedCommitId())
+
+	f.removeLease()
+	// No fetch events, no manual poll: only a later tick of Run's ticker
+	// can catch this.
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.True(c, f.leaseState.IsReleased(x1.Uuid))
+	}, 2*time.Second, 20*time.Millisecond)
+	assert.Equal(t, "t1", f.deployer.Deployment().Generation.GetSelectedCommitId())
+}
+
+// Mutant (c): release while a deployment is in flight. A gated
+// postDeploymentCommand keeps IsDeploying() true after the deployment's
+// Status has already flipped to Done (deployer.go sets Status=Done, then
+// runs the post-deployment command, then clears isDeploying) - the exact
+// window C3's "no deployment in flight" guard must cover.
+func TestC3DoesNotReleaseWhileDeploymentInFlight(t *testing.T) {
+	tmp := t.TempDir()
+	marker := filepath.Join(tmp, "release-post-deploy")
+	script := filepath.Join(tmp, "post-deploy.sh")
+	assert.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nwhile [ ! -f \""+marker+"\" ]; do sleep 0.01; done\n"), 0755))
+
+	bk := broker.New()
+	bk.Start()
+	s, err := store.New(bk, filepath.Join(tmp, "state.json"), filepath.Join(tmp, "gcroots"), 10, 10)
+	assert.NoError(t, err)
+	ls, err := leasestate.Load(filepath.Join(tmp, "lease-state.json"))
+	assert.NoError(t, err)
+	leasePath := filepath.Join(tmp, "override.json")
+	exec := &controllableExecutor{}
+	deployFunc := func(context.Context, string, string) (bool, string, error) { return false, "", nil }
+	d := deployer.New(s, deployFunc, nil, script)
+	d.Run(t.Context())
+	drainDeployments(t, d, s, nil)
+
+	m := &Manager{
+		storage:                 s,
+		deployer:                d,
+		executor:                exec,
+		configurationOperations: emptyConfigurationOperations,
+		leaseReader:             lease.NewReader(leasePath),
+		leaseState:              ls,
+	}
+	mg := mainGeneration("m1", "/nix/store/m1")
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: mg})
+	assert.NoError(t, os.WriteFile(leasePath, []byte(`{"version":1,"kind":"git"}`), 0644))
+
+	d.Submit(testingGeneration("t1", "m1"), "test")
+	// The deploy function returns instantly, so the deployment reaches
+	// Status=Done almost immediately, but the post-deployment command is
+	// blocked on the marker file: isDeploying stays true throughout.
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		dpl := d.Deployment()
+		assert.NotNil(c, dpl)
+		assert.Equal(c, store.StatusToString(store.Done), dpl.Status)
+		assert.True(c, d.IsDeploying())
+	}, 3*time.Second, 10*time.Millisecond)
+	x1 := d.Deployment()
+	assert.NoError(t, ls.MarkLeaseAware(x1.Uuid))
+
+	assert.NoError(t, os.Remove(leasePath))
+	m.releaseEndedOverrides()
+	assert.False(t, ls.IsReleased(x1.Uuid), "must not release while the post-deployment command is still running")
+
+	// Unblock the post-deployment command: only now is nothing in flight.
+	assert.NoError(t, os.WriteFile(marker, []byte("go"), 0644))
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.False(c, d.IsDeploying())
+	}, 3*time.Second, 10*time.Millisecond)
+	m.releaseEndedOverrides()
+	assert.True(t, ls.IsReleased(x1.Uuid))
+}
+
+// C3 amendment (N5/g): a deployment is testing iff
+// Generation.SelectedBranchIsTesting, not store.IsTesting (operation-keyed).
+// A persist-triggered switch-latest redeploy of a testing head (operation
+// "switch") must still be released, and never be S4 expected once the
+// lease is gone. Mutant: classify testing with store.IsTesting.
+func TestC3ClassifiesTestingBySelectedBranchNotOperation(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	m := mainGeneration("m1", "/nix/store/m1")
+	f.store.DeploymentInsert(&protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+	})
+	seeded := distinctSwitchDeploymentsOf(f, "m1")
+	f.exec.set("/nix/store/m1") // the machine runs m1
+	f.writeLease(t, "git")
+
+	x := submitAndWait(t, f, testingGeneration("t1", "m1"), "test")
+	assert.NoError(t, f.leaseState.MarkLeaseAware(x.Uuid))
+
+	// R3's persist flow: switch-latest redeploys the testing head with
+	// operation "switch" (X').
+	f.deployer.SubmitLatest(func() (*protobuf.Generation, error) { return x.Generation, nil })
+	var xPrime *protobuf.Deployment
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		xPrime = f.deployer.Deployment()
+		assert.Equal(c, "switch", xPrime.Operation)
+		assert.False(c, f.deployer.IsDeploying())
+	}, 3*time.Second, 20*time.Millisecond)
+	assert.True(t, isTestingDeployment(xPrime), "X' still descends from a testing generation")
+	assert.NoError(t, f.leaseState.MarkLeaseAware(xPrime.Uuid))
+
+	f.removeLease()
+	f.releaseEndedOverrides()
+
+	assert.True(t, f.leaseState.IsReleased(xPrime.Uuid))
+	gen, err := f.resolveExpectedGeneration()
+	require.NoError(t, err)
+	assert.Equal(t, "m1", gen.SelectedCommitId)
+	assert.Equal(t, "leaseless", f.driftStatus(time.Now()).State)
+	assert.Equal(t, seeded, distinctSwitchDeploymentsOf(f, "m1"))
+}
+
+// ---------------------------------------------------------------------
+// C5: S4 drift status
+// ---------------------------------------------------------------------
+
+func TestDecideDriftStatePrecedence(t *testing.T) {
+	cases := []struct {
+		name string
+		in   driftInputs
+		want string
+	}{
+		{"held wins over everything", driftInputs{leaseExists: true, currentEqualsExpected: false, queued: true, inFlight: true}, "held"},
+		{"none when current equals expected", driftInputs{currentEqualsExpected: true}, "none"},
+		{"none when nothing expected yet", driftInputs{hasExpected: false, currentEqualsExpected: false}, "none"},
+		{"none beats returning when both hold", driftInputs{hasExpected: true, currentEqualsExpected: true, queued: true, inFlight: true}, "none"},
+		{"returning when work is queued", driftInputs{hasExpected: true, currentEqualsExpected: false, queued: true}, "returning"},
+		{"returning when a fresh deploy is in flight", driftInputs{hasExpected: true, currentEqualsExpected: false, inFlight: true, inFlightAge: time.Minute}, "returning"},
+		{"leaseless when nothing queued or in flight", driftInputs{hasExpected: true, currentEqualsExpected: false}, "leaseless"},
+		{"leaseless when the in-flight deploy is over the age bound", driftInputs{hasExpected: true, currentEqualsExpected: false, inFlight: true, inFlightAge: 45 * time.Minute}, "leaseless"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, decideDriftState(c.in))
+		})
+	}
+}
+
+// Mutant: no age bound on an in-flight deploy (switch-to-configuration has
+// no timeout; a hung activation must eventually read leaseless, not
+// returning forever).
+func TestDecideDriftStateInFlightAgeBoundIsExclusive(t *testing.T) {
+	justUnder := driftInputs{hasExpected: true, currentEqualsExpected: false, inFlight: true, inFlightAge: maxInFlightDeployAge - time.Second}
+	assert.Equal(t, "returning", decideDriftState(justUnder))
+	atOrOver := driftInputs{hasExpected: true, currentEqualsExpected: false, inFlight: true, inFlightAge: maxInFlightDeployAge}
+	assert.Equal(t, "leaseless", decideDriftState(atOrOver))
+}
+
+func TestDriftStatusSinceIsPersistedAcrossReload(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	m := mainGeneration("m1", "/nix/store/m1")
+	f.store.DeploymentInsert(&protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+	})
+	// current != expected, no lease, nothing queued: leaseless drift.
+	now := time.Now().UTC()
+	d1 := f.driftStatus(now)
+	assert.Equal(t, "leaseless", d1.State)
+	assert.NotNil(t, d1.Since)
+
+	// Simulate a comin restart: reload leasestate from the same file.
+	reloaded, err := leasestate.Load(f.leaseStatePath)
+	assert.NoError(t, err)
+	f.leaseState = reloaded
+
+	d2 := f.driftStatus(now.Add(5 * time.Minute))
+	assert.Equal(t, "leaseless", d2.State)
+	assert.NotNil(t, d2.Since)
+	assert.Equal(t, d1.Since.AsTime(), d2.Since.AsTime(), "since must survive a restart, not reset to the new observation time")
+}
+
+// C5 fixture: the lease file was just removed with the override still
+// running and C3 has not released it yet. Nothing will return the
+// machine, so it is leaseless drift at once, not returning. Mutant: count
+// C3's release conditions as returning.
+func TestC5LeaseJustRemovedIsLeaseless(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	m := mainGeneration("m1", "/nix/store/m1")
+	f.store.DeploymentInsert(&protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+	})
+	f.exec.set("/nix/store/m1") // the machine runs m1
+	f.writeLease(t, "git")
+	x := submitAndWait(t, f, testingGeneration("t1", "m1"), "test")
+	assert.NoError(t, f.leaseState.MarkLeaseAware(x.Uuid))
+	require.Equal(t, "held", f.driftStatus(time.Now()).State)
+
+	f.removeLease() // C3 has not run: releaseEndedOverrides was never called.
+	d := f.driftStatus(time.Now())
+	assert.Equal(t, "leaseless", d.State)
+	assert.False(t, f.leaseState.IsReleased(x.Uuid))
+}
+
+// C5 fixture: a tier (main) deploy mid-activation, current-system already
+// repointed to the new out path but the deployment not yet Done, is
+// "returning" (not "none", even though current already equals the
+// in-flight deployment's target, because "expected" still points at the
+// prior done deployment until this one finishes).
+func TestC5ReturningDuringTierDeployMidActivation(t *testing.T) {
+	tmp := t.TempDir()
+	bk := broker.New()
+	bk.Start()
+	s, err := store.New(bk, filepath.Join(tmp, "state.json"), filepath.Join(tmp, "gcroots"), 10, 10)
+	assert.NoError(t, err)
+	ls, err := leasestate.Load(filepath.Join(tmp, "lease-state.json"))
+	assert.NoError(t, err)
+	exec := &controllableExecutor{}
+	deployDone := make(chan struct{})
+	// switch-to-configuration repoints /run/current-system as one of
+	// its first actions, well before the deploy function returns and
+	// the deployment's Status flips to Done - this deployFunc models
+	// that ordering directly instead of relying on deployer.go's
+	// Status-before-post-deploy-command sequencing.
+	deployFunc := func(context.Context, string, string) (bool, string, error) {
+		exec.set("/nix/store/m2")
+		<-deployDone
+		return false, "", nil
+	}
+	d := deployer.New(s, deployFunc, nil, "")
+	d.Run(t.Context())
+	drainDeployments(t, d, s, nil)
+
+	m := &Manager{
+		storage:                 s,
+		deployer:                d,
+		executor:                exec,
+		configurationOperations: emptyConfigurationOperations,
+		leaseReader:             lease.NewReader(""), // no override-lease feature: S4 is always on regardless
+		leaseState:              ls,
+	}
+	mOld := mainGeneration("m1", "/nix/store/m1")
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: mOld})
+
+	mNew := mainGeneration("m2", "/nix/store/m2")
+	d.Submit(mNew, "switch")
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Equal(c, "/nix/store/m2", exec.get())
+	}, 3*time.Second, 10*time.Millisecond)
+	// The deployment is still in flight (Status not Done yet): expected
+	// still points at the prior done deployment (M1), so current != expected.
+	assert.True(t, d.IsDeploying())
+
+	drift := m.driftStatus(time.Now())
+	assert.Equal(t, "returning", drift.State)
+
+	close(deployDone)
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.False(c, d.IsDeploying())
+	}, 3*time.Second, 10*time.Millisecond)
+}
+
+// C5: S4 exactly as contracted, asserted on the actual `comin status
+// --json` bytes (protojson, UseProtoNames, EmitUnpopulated).
+func TestC5StatusJsonBytesContract(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	m := mainGeneration("m1", "/nix/store/m1")
+	f.store.DeploymentInsert(&protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+	})
+	f.exec.set("/nix/store/m1")
+
+	body := marshalStatus(t, f.toState())
+	assert.Contains(t, body, `"drift":`)
+	assert.Contains(t, body, `"expected_out_path":"/nix/store/m1"`)
+	assert.Contains(t, body, `"state":"none"`)
+	assert.NotContains(t, body, `"drift":null`)
+}
+
+// ---------------------------------------------------------------------
+// C7: switch-latest
+// ---------------------------------------------------------------------
+
+func TestC7SwitchLatestTargetsExpectedNotLatestStoreEntry_RebootReleased(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	m := mainGeneration("m1", "/nix/store/m1")
+	f.store.DeploymentInsert(&protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+	})
+	// The latest store entry is a testing deployment released by a
+	// reboot (older than M in append order, but store.DeploymentList
+	// puts the most recently INSERTED row first; here it is the "latest"
+	// entry in the sense GetDeploymentLastest would have picked).
+	x := &protobuf.Deployment{
+		Uuid:       "t1-dpl",
+		Operation:  "test",
+		Status:     store.StatusToString(store.Done),
+		Generation: testingGeneration("t1", "m1"),
+		EndedAt:    timestamppb.New(time.Now()),
+	}
+	f.store.DeploymentInsert(x)
+	assert.NoError(t, f.leaseState.MarkLeaseAware(x.Uuid))
+	assert.NoError(t, f.leaseState.Release([]string{x.Uuid}))
+
+	gen, err := f.resolveExpectedGeneration()
+	assert.NoError(t, err)
+	assert.Equal(t, "m1", gen.SelectedCommitId, "a released testing deployment must never be the switch-latest target")
+}
+
+func TestC7SwitchLatestTargetsExpectedNotLatestStoreEntry_Failed(t *testing.T) {
+	f := newLeaseFixture(t, nil)
+	m := mainGeneration("m1", "/nix/store/m1")
+	f.store.DeploymentInsert(&protobuf.Deployment{
+		Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m,
+	})
+	failed := &protobuf.Deployment{
+		Uuid:       "m2-dpl",
+		Operation:  "switch",
+		Status:     store.StatusToString(store.Failed),
+		Generation: mainGeneration("m2", "/nix/store/m2"),
+		EndedAt:    timestamppb.New(time.Now()),
+	}
+	f.store.DeploymentInsert(failed)
+
+	gen, err := f.resolveExpectedGeneration()
+	assert.NoError(t, err)
+	assert.Equal(t, "m1", gen.SelectedCommitId, "a failed deployment must never be the switch-latest target")
+}
+
+// A git lease is live and a newer testing deploy is in flight when persist
+// (switch-latest) is requested: the newer one is switched, because
+// SubmitLatest resolves at deploy time, after the in-flight one finishes.
+func TestC7SwitchLatestTargetsNewerTestingDeployStillInFlight(t *testing.T) {
+	tmp := t.TempDir()
+	marker := filepath.Join(tmp, "marker")
+	script := filepath.Join(tmp, "post-deploy.sh")
+	assert.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nwhile [ ! -f \""+marker+"\" ]; do sleep 0.01; done\n"), 0755))
+
+	bk := broker.New()
+	bk.Start()
+	s, err := store.New(bk, filepath.Join(tmp, "state.json"), filepath.Join(tmp, "gcroots"), 10, 10)
+	assert.NoError(t, err)
+	ls, err := leasestate.Load(filepath.Join(tmp, "lease-state.json"))
+	assert.NoError(t, err)
+	leasePath := filepath.Join(tmp, "override.json")
+	exec := &controllableExecutor{}
+	deployFunc := func(context.Context, string, string) (bool, string, error) { return false, "", nil }
+	d := deployer.New(s, deployFunc, nil, script)
+	d.Run(t.Context())
+	drainDeployments(t, d, s, nil)
+
+	m := &Manager{
+		storage:                 s,
+		deployer:                d,
+		executor:                exec,
+		configurationOperations: emptyConfigurationOperations,
+		leaseReader:             lease.NewReader(leasePath),
+		leaseState:              ls,
+	}
+	mg := mainGeneration("m1", "/nix/store/m1")
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: mg})
+	assert.NoError(t, os.WriteFile(leasePath, []byte(`{"version":1,"kind":"git"}`), 0644))
+
+	// The newer testing deploy is in flight (Status=Done, but the
+	// post-deployment command is still blocked).
+	d.Submit(testingGeneration("t2", "m1"), "test")
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		dpl := d.Deployment()
+		assert.NotNil(c, dpl)
+		assert.Equal(c, store.StatusToString(store.Done), dpl.Status)
+	}, 3*time.Second, 10*time.Millisecond)
+	assert.NoError(t, ls.MarkLeaseAware(d.Deployment().Uuid))
+
+	assert.NoError(t, m.SwitchDeploymentLatest())
+	_, queued := d.Activity()
+	assert.True(t, queued, "the switch-latest request is queued, waiting for the in-flight deploy to actually finish")
+
+	assert.NoError(t, os.WriteFile(marker, []byte("go"), 0644))
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Equal(c, "t2", d.Deployment().Generation.GetSelectedCommitId())
+		assert.Equal(c, "switch", d.Deployment().Operation)
+	}, 3*time.Second, 10*time.Millisecond)
+}
+
+// C7: a switch-latest request survives a comin restart between the
+// request and the deployer picking it up.
+func TestC7SwitchLatestSurvivesRestart(t *testing.T) {
+	tmp := t.TempDir()
+	bk := broker.New()
+	bk.Start()
+	s, err := store.New(bk, filepath.Join(tmp, "state.json"), filepath.Join(tmp, "gcroots"), 10, 10)
+	assert.NoError(t, err)
+	leaseStatePath := filepath.Join(tmp, "lease-state.json")
+	ls, err := leasestate.Load(leaseStatePath)
+	assert.NoError(t, err)
+	m1 := mainGeneration("m1", "/nix/store/m1")
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "m1-dpl", Operation: "switch", Status: store.StatusToString(store.Done), Generation: m1})
+
+	exec1 := &controllableExecutor{}
+	deployFunc := func(context.Context, string, string) (bool, string, error) { return false, "", nil }
+	d1 := deployer.New(s, deployFunc, nil, "")
+	// Note: d1.Run is never called, simulating the request being made
+	// and comin restarting before the deployer goroutine (re)starts.
+	mgr1 := &Manager{
+		storage:                 s,
+		deployer:                d1,
+		executor:                exec1,
+		configurationOperations: emptyConfigurationOperations,
+		leaseReader:             lease.NewReader(""),
+		leaseState:              ls,
+	}
+	assert.NoError(t, mgr1.SwitchDeploymentLatest())
+	assert.True(t, ls.PendingSwitchLatest())
+
+	// Restart: fresh deployer and leasestate reload from the same files.
+	// d2.Run is started by mgr2.Run itself, and mgr2.Run also drains
+	// DeploymentDoneCh (which is what actually clears PendingSwitchLatest).
+	ls2, err := leasestate.Load(leaseStatePath)
+	assert.NoError(t, err)
+	assert.True(t, ls2.PendingSwitchLatest())
+	d2 := deployer.New(s, deployFunc, nil, "")
+	mgr2 := New(s, prometheus.New(), scheduler.New(), fetcher.NewFetcher(utils.NewRepositoryMock()),
+		builder.New(s, exec1, "", "", "", "host", time.Second, time.Second), d2, "", exec1,
+		NewConfirmer(bk, Without, 0, ""), NewConfirmer(bk, Without, 0, ""), bk, emptyConfigurationOperations,
+		lease.NewReader(""), ls2)
+
+	runManager(t, mgr2)
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		dpl := d2.Deployment()
+		if !assert.NotNil(c, dpl) {
+			return
+		}
+		assert.Equal(c, "m1", dpl.Generation.GetSelectedCommitId())
+		assert.Equal(c, "switch", dpl.Operation)
+	}, 3*time.Second, 20*time.Millisecond)
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.False(c, ls2.PendingSwitchLatest())
+	}, 3*time.Second, 20*time.Millisecond)
+}
