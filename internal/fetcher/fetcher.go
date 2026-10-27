@@ -81,13 +81,13 @@ func (f *Fetcher) Start(ctx context.Context) {
 	logrus.Info("fetcher: starting")
 	go func() {
 		remotes := make([]string, 0)
-		var workerRepositoryStatusCh chan *protobuf.RepositoryStatus
+		var fetchResultCh chan *protobuf.RepositoryStatus
 		for {
 			select {
 			case submittedRemotes := <-f.submitRemotes:
 				logrus.Debugf("fetch: remotes submitted: %s", submittedRemotes)
 				remotes = union(remotes, submittedRemotes)
-			case rs := <-workerRepositoryStatusCh:
+			case rs := <-fetchResultCh:
 				f.isFetching.Store(false)
 				f.mu.Lock()
 				f.repositoryStatus = rs
@@ -99,7 +99,7 @@ func (f *Fetcher) Start(ctx context.Context) {
 			}
 			if !f.isFetching.Load() && len(remotes) != 0 {
 				f.isFetching.Store(true)
-				workerRepositoryStatusCh = f.repo.FetchAndUpdate(ctx, remotes)
+				fetchResultCh = f.repo.FetchAndUpdate(ctx, remotes)
 				remotes = []string{}
 			}
 		}
