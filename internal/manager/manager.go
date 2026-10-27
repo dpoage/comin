@@ -51,7 +51,11 @@ type Manager struct {
 
 	configurationOperations ConfigurationOperations
 
+	// isSuspended is the suspension the passes read. Suspend sets it under
+	// passMu, which a pass holds from observe through apply, before it
+	// suspends the builder and the deployer.
 	isSuspended atomic.Bool
+	passMu      sync.Mutex
 
 	broker *broker.Broker
 
@@ -145,19 +149,27 @@ func (m *Manager) SwitchDeploymentLatest() error {
 	return nil
 }
 
+// Suspend marks the manager suspended for the passes before it suspends the
+// builder, whose cancelled build wakes a pass, and the deployer.
 func (m *Manager) Suspend() error {
+	m.passMu.Lock()
 	if m.isSuspended.Load() {
+		m.passMu.Unlock()
 		return fmt.Errorf("the manager is already suspended")
 	}
+	m.isSuspended.Store(true)
+	m.passMu.Unlock()
 	if err := m.Builder.Suspend(); err != nil {
+		m.isSuspended.Store(false)
 		return err
 	}
 	m.deployer.Suspend()
-	m.isSuspended.Store(true)
 	m.broker.Publish(&protobuf.Event{Type: &protobuf.Event_Suspend_{Suspend: &protobuf.Event_Suspend{}}})
 	return nil
 }
 
+// Resume resumes the builder, which restarts a build the suspension
+// cancelled, and the deployer before the passes see the manager resumed.
 func (m *Manager) Resume(ctx context.Context) error {
 	if !m.isSuspended.Load() {
 		return fmt.Errorf("the manager is not suspended")
@@ -200,7 +212,7 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 	m.prometheus.SetHostInfo(m.needToReboot, m.isSuspended.Load())
 
-	m.deployer.SetPreActivation(m.preActivation)
+	m.deployer.SetPreActivation(m.preActivation, m.abandoned)
 	m.deployer.Run(ctx)
 	go m.watch(ctx)
 	go m.reconcileLoop(ctx)

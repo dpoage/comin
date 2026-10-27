@@ -69,7 +69,7 @@ func TestPreActivation(t *testing.T) {
 	d.SetPreActivation(func(_ context.Context, g *protobuf.Generation, operation string) bool {
 		record("check " + g.OutPath + " " + operation)
 		return admit.Load()
-	})
+	}, func(g *protobuf.Generation) { t.Errorf("generation %s abandoned without a suspension", g.Uuid) })
 	d.Run(t.Context())
 
 	d.Submit(&protobuf.Generation{Uuid: "g1", OutPath: "/out/1"}, "switch")

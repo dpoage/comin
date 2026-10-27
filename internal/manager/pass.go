@@ -39,6 +39,7 @@ type cached struct {
 
 // submission is the deployment handed to the deployer and not yet finished.
 type submission struct {
+	uuid    string
 	outPath string
 	trigger string
 }
@@ -54,6 +55,19 @@ func (m *Manager) endSubmission() {
 	m.mu.Lock()
 	m.inFlight = nil
 	m.mu.Unlock()
+}
+
+// abandoned is the deployer's report that it dropped g because it got
+// suspended during the pre-activation ask. The confirmation of g stands:
+// the pass after Resume decides again.
+func (m *Manager) abandoned(g *protobuf.Generation) {
+	m.mu.Lock()
+	if m.inFlight != nil && m.inFlight.uuid == g.Uuid {
+		m.deployConfirmed = g.Uuid
+	}
+	m.inFlight = nil
+	m.mu.Unlock()
+	m.wake()
 }
 
 // reconcileLoop runs a pass at start, then on every wake, trigger and tick.
@@ -107,20 +121,20 @@ func (m *Manager) watch(ctx context.Context) {
 }
 
 // pass decides and applies steps until one needs an external event. The
-// verdicts of its asks live for the pass only.
+// verdicts of its asks live for the pass only. A step holds passMu from
+// observe through apply; asks run without it.
 func (m *Manager) pass(ctx context.Context, trigger string) {
-	m.mu.Lock()
-	confirmed := m.deployConfirmed
-	m.deployConfirmed = ""
-	m.mu.Unlock()
 	verdicts := map[genKey]preflight.Verdict{}
 	for ctx.Err() == nil {
-		obs, entries := m.observe(trigger, confirmed, verdicts)
+		m.passMu.Lock()
+		obs, entries := m.observe(trigger, verdicts)
 		d := reconcile.Decide(obs)
 		if d.Action != reconcile.Ask {
 			m.apply(ctx, obs, entries, d)
+			m.passMu.Unlock()
 			return
 		}
+		m.passMu.Unlock()
 		c := obs.Candidates[d.Target]
 		v := preflight.Ask(ctx, m.preflight, askEnv(entries[d.Target].gen, m.operation(c.Candidate), obs.Current, obs.Trigger))
 		logrus.Infof("manager: preflight for %s: admitted=%t %s", c.CommitId, v.Admitted, v.Reason)
@@ -128,23 +142,28 @@ func (m *Manager) pass(ctx context.Context, trigger string) {
 	}
 }
 
-func (m *Manager) observe(trigger, confirmed string, verdicts map[genKey]preflight.Verdict) (reconcile.Observation, []*cached) {
+// observe gathers one Observation. While suspended it walks no candidate,
+// so a build the suspension cancelled is never read.
+func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict) (reconcile.Observation, []*cached) {
 	current, currentErr := m.currentSystem()
 	m.mu.Lock()
 	obs := reconcile.Observation{
 		Current:        current,
 		CurrentErr:     currentErr,
 		InFlight:       m.inFlight != nil,
-		DeployConfirm:  reconcile.DeployConfirm{Pending: m.deployPending, Confirmed: confirmed},
+		DeployConfirm:  reconcile.DeployConfirm{Pending: m.deployPending, Confirmed: m.deployConfirmed},
 		LastActivation: m.lastActivation,
 	}
 	buildPending := m.buildPending
 	m.mu.Unlock()
 	obs.InFlight = obs.InFlight || m.deployer.IsDeploying()
-	obs.Suspended = m.deployer.IsSuspended()
+	obs.Suspended = m.isSuspended.Load()
 	obs.AsksRun = m.preflight.Path != ""
 	obs.Trigger = trigger
 	obs.Deployments = m.storage.DeploymentList()
+	if obs.Suspended {
+		return obs, nil
+	}
 
 	candidates := repository.Candidates(m.Fetcher.Latest())
 	entries := make([]*cached, len(candidates))
@@ -234,11 +253,13 @@ func (m *Manager) apply(ctx context.Context, obs reconcile.Observation, entries 
 		logrus.Infof("manager: the deployment of the generation %s is submitted", c.GenerationUuid)
 		m.mu.Lock()
 		m.deployPending = c.GenerationUuid
+		m.deployConfirmed = ""
 		m.mu.Unlock()
 		m.DeployConfirmer.Submit(c.GenerationUuid)
 	case reconcile.Deploy:
 		m.mu.Lock()
-		m.inFlight = &submission{outPath: c.OutPath, trigger: obs.Trigger}
+		m.inFlight = &submission{uuid: c.GenerationUuid, outPath: c.OutPath, trigger: obs.Trigger}
+		m.deployConfirmed = ""
 		m.mu.Unlock()
 		m.deployer.Submit(proto.CloneOf(entries[d.Target].gen), m.operation(c.Candidate))
 	}
@@ -283,6 +304,7 @@ func (m *Manager) preActivation(ctx context.Context, g *protobuf.Generation, ope
 	if m.preflight.Path != "" && !m.executor.IsStorePathExist(g.OutPath) {
 		logrus.Infof("manager: the out path %s of the generation %s is not in the store: not activated", g.OutPath, g.Uuid)
 		m.endSubmission()
+		m.wake()
 		return false
 	}
 	current, _ := m.currentSystem()
@@ -293,6 +315,7 @@ func (m *Manager) preActivation(ctx context.Context, g *protobuf.Generation, ope
 	if !v.Admitted {
 		logrus.Infof("manager: the activation of %s is refused: %s", g.OutPath, v.Reason)
 		m.endSubmission()
+		m.wake()
 	}
 	return v.Admitted
 }

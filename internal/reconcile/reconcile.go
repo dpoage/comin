@@ -44,7 +44,7 @@ type Candidate struct {
 type DeployConfirm struct {
 	// Pending: submitted and not yet confirmed.
 	Pending string
-	// Confirmed: confirmed since the last pass.
+	// Confirmed: confirmed and not yet handed to the deployer.
 	Confirmed string
 }
 

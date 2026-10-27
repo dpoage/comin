@@ -50,6 +50,9 @@ type fakeExec struct {
 	restart     bool
 	reboot      bool
 	unknown     bool
+	// buildDelay is how long a build takes unless cancelled; builds counts the started ones.
+	buildDelay time.Duration
+	builds     int
 }
 
 func (e *fakeExec) Eval(_ context.Context, _, _, commitId, _, _ string) (string, string, string, error) {
@@ -59,8 +62,23 @@ func (e *fakeExec) Eval(_ context.Context, _, _, commitId, _, _ string) (string,
 	return filepath.Join(e.storeDir, commitId+".drv"), filepath.Join(e.storeDir, commitId), "", nil
 }
 
-func (e *fakeExec) Build(_ context.Context, drvPath string) error {
+func (e *fakeExec) Build(ctx context.Context, drvPath string) error {
+	e.mu.Lock()
+	e.builds++
+	delay := e.buildDelay
+	e.mu.Unlock()
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	return os.MkdirAll(strings.TrimSuffix(drvPath, ".drv"), 0o755)
+}
+
+func (e *fakeExec) buildCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.builds
 }
 
 func (e *fakeExec) Deploy(_ context.Context, out, operation string) (bool, string, error) {
@@ -204,6 +222,10 @@ exists=no
 [ -e "$COMIN_OUT_PATH" ] && exists=yes
 printf '%%s|%%s|%%s|%%s|%%s|%%s|%%s|%%s|%%s|%%s\n' "$COMIN_BRANCH" "$COMIN_OUT_PATH" "$COMIN_GIT_SHA" "$COMIN_GIT_REF" "$COMIN_GIT_MSG" "$COMIN_OPERATION" "$COMIN_CURRENT_SYSTEM" "$COMIN_TRIGGER" "$COMIN_HOSTNAME" "$exists" >> "$d/asks.log"
 if [ -e "$d/block" ]; then sleep 10; fi
+if [ -e "$d/slow" ]; then
+  read secs from < "$d/slow"
+  [ "$(wc -l < "$d/asks.log")" -ge "$from" ] && sleep "$secs"
+fi
 v=$(cat "$d/verdict-$COMIN_BRANCH" 2>/dev/null)
 if [ "$v" = refuse ]; then echo "refused: $COMIN_BRANCH"; exit 1; fi
 exit 0
@@ -226,6 +248,20 @@ func (r *rig) block(on bool) {
 	} else {
 		_ = os.Remove(p)
 	}
+}
+
+// slowAsks makes the asks from the from-th logged one on take d; d == 0
+// makes them fast again.
+func (r *rig) slowAsks(d time.Duration, from int) {
+	r.t.Helper()
+	p := filepath.Join(r.scriptDir, "slow")
+	if d == 0 {
+		_ = os.Remove(p)
+		return
+	}
+	tmp := p + ".tmp"
+	require.NoError(r.t, os.WriteFile(tmp, fmt.Appendf(nil, "%g %d\n", d.Seconds(), from), 0o644))
+	require.NoError(r.t, os.Rename(tmp, p))
 }
 
 func (r *rig) asks() []ask {
