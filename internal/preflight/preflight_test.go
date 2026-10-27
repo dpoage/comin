@@ -3,11 +3,13 @@ package preflight_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -63,6 +65,7 @@ func TestAskAdmitsIffExitZeroBeforeTimeout(t *testing.T) {
 	}
 }
 
+// alive reports whether pid exists in /proc and is not a zombie.
 func alive(pid int) bool {
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
@@ -72,18 +75,8 @@ func alive(pid int) bool {
 	return s[strings.LastIndexByte(s, ')')+2] != 'Z'
 }
 
-func TestAskTimeoutKillsWholeProcessGroup(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs /proc")
-	}
-	pidFile := filepath.Join(t.TempDir(), "pid")
-	p := script(t, "sleep 1000 &\necho $! > "+pidFile+"\nwait\n", 0o755)
-
-	timeout := time.Second
-	start := time.Now()
-	v := preflight.Ask(context.Background(), preflight.Command{Path: p, Timeout: timeout}, nil)
-	elapsed := time.Since(start)
-
+func readPID(t *testing.T, pidFile string) int {
+	t.Helper()
 	b, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatal(err)
@@ -92,27 +85,159 @@ func TestAskTimeoutKillsWholeProcessGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if alive(pid) {
-			if proc, err := os.FindProcess(pid); err == nil {
-				_ = proc.Kill()
-			}
-		}
-	})
+	return pid
+}
 
-	if v.Admitted {
-		t.Fatalf("admitted on timeout: %+v", v)
+// askBounded fails the test unless Ask returns within bound.
+func askBounded(t *testing.T, ctx context.Context, path string, timeout, bound time.Duration) preflight.Verdict {
+	t.Helper()
+	start := time.Now()
+	done := make(chan preflight.Verdict, 1)
+	go func() {
+		done <- preflight.Ask(ctx, preflight.Command{Path: path, Timeout: timeout}, nil)
+	}()
+	select {
+	case v := <-done:
+		if d := time.Since(start); d > bound {
+			t.Fatalf("Ask took %s, want <= %s", d, bound)
+		}
+		return v
+	case <-time.After(bound + 2*time.Second):
+		t.Fatalf("Ask did not return within %s", bound)
 	}
-	if elapsed > timeout+5*time.Second {
-		t.Fatalf("Ask took %s, want <= %s", elapsed, timeout+5*time.Second)
-	}
+	panic("unreachable")
+}
+
+// guardPID best-effort kills the pid recorded in pidFile, so a grandchild no
+// code path kills never outlives the run.
+func guardPID(t *testing.T, pidFile string) {
+	t.Cleanup(func() {
+		b, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil || pid <= 0 || !alive(pid) {
+			return
+		}
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+}
+
+// waitDead polls up to 2s for pid to leave the live set.
+func waitDead(t *testing.T, pid int) {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for alive(pid) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if alive(pid) {
-		t.Fatalf("grandchild %d still alive after Ask returned", pid)
+		t.Fatalf("process %d still alive after Ask returned", pid)
 	}
+}
+
+// askWithGrandchild runs a script that starts sleep 1000 holding stdout, records
+// its pid, then runs body.
+func askWithGrandchild(t *testing.T, body string, timeout, cancelAfter time.Duration) (preflight.Verdict, string) {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	p := script(t, "sleep 1000 &\necho $! > "+pidFile+"\n"+body, 0o755)
+	guardPID(t, pidFile)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if cancelAfter > 0 {
+		time.AfterFunc(cancelAfter, cancel)
+	}
+	return askBounded(t, ctx, p, timeout, timeout+5*time.Second), pidFile
+}
+
+func TestAskKillsGroupWhateverTheVerdict(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs /proc")
+	}
+	cases := []struct {
+		name     string
+		body     string
+		timeout  time.Duration
+		cancel   time.Duration
+		admitted bool
+		reason   string
+	}{
+		{"admit", "exit 0\n", 2 * time.Second, 0, true, ""},
+		{"timeout", "wait\n", time.Second, 0, false, "preflight: timed out after 1s"},
+		{"ctx end", "wait\n", 30 * time.Second, time.Second, false, "preflight: context ended: context canceled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, pidFile := askWithGrandchild(t, tc.body, tc.timeout, tc.cancel)
+			if v.Admitted != tc.admitted {
+				t.Fatalf("Admitted = %v, want %v (reason %q)", v.Admitted, tc.admitted, v.Reason)
+			}
+			if !strings.HasPrefix(v.Reason, tc.reason) {
+				t.Fatalf("Reason = %q, want prefix %q", v.Reason, tc.reason)
+			}
+			waitDead(t, readPID(t, pidFile))
+		})
+	}
+}
+
+// A leader that exited (status N or signal S) before the timer fired or ctx
+// ended keeps that cause even when the timer or ctx fires later while a
+// grandchild holds stdout.
+func TestAskNamesLeadersExitCauseWhenGrandchildHoldsStdout(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs /proc")
+	}
+	cases := []struct {
+		name    string
+		body    string
+		timeout time.Duration
+		cancel  time.Duration
+		reason  string
+	}{
+		{"exit status before the timer", "exit 1\n", time.Second, 0, "preflight: exit status 1"},
+		{"exit status before ctx end", "exit 1\n", 30 * time.Second, time.Second, "preflight: exit status 1"},
+		{"signal before the timer", "kill -9 $$\n", time.Second, 0, "preflight: killed by signal 9 "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, pidFile := askWithGrandchild(t, tc.body, tc.timeout, tc.cancel)
+			if v.Admitted {
+				t.Fatalf("admitted: %+v", v)
+			}
+			if !strings.HasPrefix(v.Reason, tc.reason) {
+				t.Fatalf("Reason = %q, want prefix %q", v.Reason, tc.reason)
+			}
+			waitDead(t, readPID(t, pidFile))
+		})
+	}
+}
+
+// Ask returns within Timeout+5s when the leader exits but a grandchild holds
+// stdout: in-group (killed at return) and setsid (out of the group).
+func TestAskReturnsBoundedWhenGrandchildHoldsStdout(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs /proc")
+	}
+	t.Run("grandchild in the group", func(t *testing.T) {
+		v, pidFile := askWithGrandchild(t, "exit 0\n", 2*time.Second, 0)
+		if !v.Admitted {
+			t.Fatalf("not admitted: %+v", v)
+		}
+		waitDead(t, readPID(t, pidFile))
+	})
+	t.Run("grandchild left the group", func(t *testing.T) {
+		if _, err := exec.LookPath("setsid"); err != nil {
+			t.Skip("setsid not available")
+		}
+		pidFile := filepath.Join(t.TempDir(), "pid")
+		p := script(t, "setsid sh -c 'echo $$ > "+pidFile+"; exec sleep 1000' &\nexit 0\n", 0o755)
+		guardPID(t, pidFile)
+		v := askBounded(t, context.Background(), p, 2*time.Second, 2*time.Second+5*time.Second)
+		if !v.Admitted {
+			t.Fatalf("not admitted: %+v", v)
+		}
+	})
 }
 
 func TestAskReasonIsFirstStdoutLine(t *testing.T) {
@@ -146,6 +271,18 @@ func TestAskReasonIsFirstStdoutLine(t *testing.T) {
 		}
 		if d := time.Since(start); d > 5*time.Second {
 			t.Fatalf("Ask took %s", d)
+		}
+	})
+	t.Run("cap backs off to a rune boundary", func(t *testing.T) {
+		data := filepath.Join(t.TempDir(), "line")
+		if err := os.WriteFile(data, []byte(strings.Repeat("€", 1500)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p := script(t, "cat "+data+"\nexit 3\n", 0o755)
+		v := preflight.Ask(context.Background(), preflight.Command{Path: p, Timeout: 10 * time.Second}, nil)
+		want := strings.Repeat("€", 1365)
+		if v.Admitted || v.Reason != want {
+			t.Fatalf("got admitted=%v len=%d, want len=%d", v.Admitted, len(v.Reason), len(want))
 		}
 	})
 }
