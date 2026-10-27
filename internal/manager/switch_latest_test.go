@@ -8,8 +8,8 @@ import (
 	"github.com/nlewo/comin/internal/broker"
 	"github.com/nlewo/comin/internal/builder"
 	"github.com/nlewo/comin/internal/deployer"
-	"github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/fetcher"
+	"github.com/nlewo/comin/internal/preflight"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/scheduler"
@@ -34,12 +34,12 @@ func newSwitchLatestManager(t *testing.T, calls chan switchLatestCall) (*Manager
 		return false, "", nil
 	}, nil, "")
 	d.Run(t.Context())
-	e, _ := executor.NewNixOSFlake()
+	e := NewExecutorMock("")
 	bc := NewConfirmer(bk, Without, 0, "")
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations, preflight.Command{})
 	return m, s
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/nlewo/comin/internal/fetcher"
 	"github.com/nlewo/comin/internal/http"
 	"github.com/nlewo/comin/internal/manager"
+	"github.com/nlewo/comin/internal/preflight"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/repository"
@@ -133,7 +134,7 @@ var runCmd = &cobra.Command{
 			configurationOperations[r.Name][r.Branches.Main.Name] = r.Branches.Main.Operation
 			configurationOperations[r.Name][r.Branches.Testing.Name] = r.Branches.Testing.Operation
 		}
-		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations)
+		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, preflight.Command{})
 
 		http.Serve(manager,
 			metrics,

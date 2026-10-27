@@ -15,9 +15,11 @@ import (
 	"github.com/nlewo/comin/internal/deployer"
 	"github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/fetcher"
+	"github.com/nlewo/comin/internal/preflight"
 	"github.com/nlewo/comin/internal/profile"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/scheduler"
 	"github.com/nlewo/comin/internal/store"
 	"github.com/sirupsen/logrus"
@@ -50,6 +52,9 @@ type Manager struct {
 	isSuspended bool
 
 	broker *broker.Broker
+
+	// preflight is the externally configured admission check.
+	preflight preflight.Command
 }
 
 func New(s *store.Store,
@@ -64,6 +69,7 @@ func New(s *store.Store,
 	deployConfirmer *Confirmer,
 	broker *broker.Broker,
 	configurationOperations ConfigurationOperations,
+	preflight preflight.Command,
 ) *Manager {
 
 	m := &Manager{
@@ -81,6 +87,7 @@ func New(s *store.Store,
 		DeployConfirmer:         deployConfirmer,
 		broker:                  broker,
 		configurationOperations: configurationOperations,
+		preflight:               preflight,
 	}
 	return m
 }
@@ -148,7 +155,16 @@ func (m *Manager) FetchAndBuild(ctx context.Context) {
 			case rs := <-m.Fetcher.RepositoryStatusCh:
 				if !rs.SelectedCommitShouldBeSigned.GetValue() || rs.SelectedCommitSigned.GetValue() {
 					logrus.Infof("manager: a generation is evaluating for commit %s", rs.SelectedCommitId)
-					err := m.Builder.Eval(ctx, rs)
+					err := m.Builder.Eval(ctx, repository.Candidate{
+						Remote:         rs.SelectedRemoteName,
+						Branch:         rs.SelectedBranchName,
+						CommitId:       rs.SelectedCommitId,
+						CommitMsg:      rs.SelectedCommitMsg,
+						Testing:        rs.SelectedBranchIsTesting.GetValue(),
+						MainCommitId:   rs.MainCommitId,
+						MainRemoteName: rs.MainRemoteName,
+						MainBranchName: rs.MainBranchName,
+					})
 					if err != nil {
 						logrus.Error(err)
 					}

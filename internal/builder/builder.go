@@ -18,6 +18,7 @@ import (
 
 	"github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/store"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -175,7 +176,7 @@ func (r *Buildator) Run(ctx context.Context) (err error) {
 // Nix store, it then consider the build is done. In this case, it
 // doesn't notify for the end of the evaluation but for the end of the
 // build.
-func (b *Builder) Eval(ctx context.Context, rs *protobuf.RepositoryStatus) error {
+func (b *Builder) Eval(ctx context.Context, c repository.Candidate) error {
 	// This is to prempt the builder since we don't need to allow
 	// several evaluation in parallel
 	b.Stop()
@@ -183,7 +184,7 @@ func (b *Builder) Eval(ctx context.Context, rs *protobuf.RepositoryStatus) error
 	defer b.mu.Unlock()
 	b.isEvaluating.Store(true)
 
-	g := b.store.NewGeneration(b.hostname, b.repositoryPath, b.repositoryDir, b.systemAttr, rs)
+	g := b.store.NewGeneration(b.hostname, b.repositoryPath, b.repositoryDir, b.systemAttr, c)
 	if err := b.store.GenerationEvalStarted(g.Uuid); err != nil {
 		return err
 	}
