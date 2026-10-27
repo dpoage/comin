@@ -42,6 +42,9 @@ func TestReadPreflightOptions(t *testing.T) {
 		{name: "both set", yaml: minimalConfig + "preflight_command: /x/y\npreflight_timeout: 7\n", command: "/x/y", timeout: 7},
 		{name: "command only", yaml: minimalConfig + "preflight_command: /x/y\n", command: "/x/y", timeout: 60},
 		{name: "timeout negative", yaml: minimalConfig + "preflight_timeout: -1\n", wantErr: "preflight_timeout"},
+		{name: "timeout largest", yaml: minimalConfig + "preflight_timeout: 9223372036\n", command: "", timeout: 9223372036},
+		{name: "timeout overflows duration", yaml: minimalConfig + "preflight_timeout: 9223372037\n", wantErr: "preflight_timeout"},
+		{name: "timeout max int64", yaml: minimalConfig + "preflight_timeout: 9223372036854775807\n", wantErr: "preflight_timeout"},
 		{name: "command relative", yaml: minimalConfig + "preflight_command: x/y\n", wantErr: "preflight_command"},
 	}
 	for _, tt := range tests {
@@ -132,6 +135,9 @@ func TestRenderedConfigRoundTrip(t *testing.T) {
 	if _, err := exec.LookPath("nix-build"); err != nil {
 		t.Skip("nix-build not found: cannot render the configuration through the nix module")
 	}
+	if err := exec.CommandContext(t.Context(), "nix-instantiate", "--find-file", "nixpkgs").Run(); err != nil {
+		t.Skip("<nixpkgs> is not in the nix search path: cannot render the configuration through the nix module")
+	}
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	nixDir := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(file))), "nix")
@@ -175,17 +181,24 @@ func TestRenderedConfigRoundTrip(t *testing.T) {
 		assert.Contains(t, output, "path")
 	})
 
-	t.Run("operation boot", func(t *testing.T) {
-		_, output, err := render(t, `{ remotes = [ { name = "origin"; url = "u"; branches.main.operation = "boot"; } ]; }`)
-		require.Error(t, err)
-		assert.Contains(t, output, "branches.main.operation")
-		assert.Contains(t, output, `"switch", "test"`)
-	})
-
-	t.Run("operation dry-activate", func(t *testing.T) {
-		_, output, err := render(t, `{ remotes = [ { name = "origin"; url = "u"; branches.testing.operation = "dry-activate"; } ]; }`)
-		require.Error(t, err)
-		assert.Contains(t, output, "branches.testing.operation")
-		assert.Contains(t, output, `"switch", "test"`)
-	})
+	for _, branch := range []string{"main", "testing"} {
+		for _, operation := range []string{"switch", "test"} {
+			t.Run(fmt.Sprintf("operation %s %s accepted", branch, operation), func(t *testing.T) {
+				rendered, output, err := render(t, fmt.Sprintf(`{ remotes = [ { name = "origin"; url = "u"; branches.%s.operation = "%s"; } ]; }`, branch, operation))
+				require.NoError(t, err, output)
+				config, err := Read(rendered)
+				require.NoError(t, err)
+				branches := config.Remotes[0].Branches
+				assert.Equal(t, operation, map[string]string{"main": branches.Main.Operation, "testing": branches.Testing.Operation}[branch])
+			})
+		}
+		for _, operation := range []string{"boot", "dry-activate", "check", "swich"} {
+			t.Run(fmt.Sprintf("operation %s %s rejected", branch, operation), func(t *testing.T) {
+				_, output, err := render(t, fmt.Sprintf(`{ remotes = [ { name = "origin"; url = "u"; branches.%s.operation = "%s"; } ]; }`, branch, operation))
+				require.Error(t, err)
+				assert.Contains(t, output, fmt.Sprintf("branches.%s.operation", branch))
+				assert.Contains(t, output, "is not of type `one of \"switch\", \"test\"'")
+			})
+		}
+	}
 }

@@ -24,7 +24,8 @@
 
 ### Changed
 
-- `branches.*.operation` accepts only `switch` or `test`. The NixOS module and
-  the configuration file reader both reject every other value with an error
-  naming the branch, the option and the reason. Default operations (`switch` on
-  main, `test` on testing) are unchanged.
+- `branches.*.operation` accepts only `switch` or `test`. The NixOS module
+  rejects every other value with a type error naming the option. The
+  configuration file reader rejects every other value with an error naming the
+  branch, the option and the reason. Default operations (`switch` on main,
+  `test` on testing) are unchanged.

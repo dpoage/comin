@@ -363,8 +363,8 @@ deployment\. comin provides to the script the following
 environment variables: ` COMIN_GIT_SHA `, ` COMIN_GIT_REF `,
 ` COMIN_GIT_MSG `, ` COMIN_HOSTNAME `, ` COMIN_FLAKE_URL `,
 ` COMIN_GENERATION `, ` COMIN_STATUS `, ` COMIN_ERROR_MSG ` and
-` COMIN_OPERATION ` (the deployment’s operation: ` switch `, ` test `
-or ` boot `)\.
+` COMIN_OPERATION ` (the deployment’s operation: ` switch ` or
+` test `)\.
 
 
 

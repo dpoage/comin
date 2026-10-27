@@ -2,10 +2,12 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nlewo/comin/internal/types"
 	"github.com/sirupsen/logrus"
@@ -57,7 +59,11 @@ func Read(path string) (config types.Configuration, err error) {
 		return config, fmt.Errorf("config: preflight_command is '%s' while it must be an absolute path", config.PreflightCommand)
 	}
 	if config.PreflightTimeout < 0 {
-		return config, fmt.Errorf("config: preflight_timeout is '%d' seconds while it must be a positive number of seconds", config.PreflightTimeout)
+		return config, fmt.Errorf("config: preflight_timeout is '%d' seconds while it must not be negative (0 or absent means the default of 60 seconds)", config.PreflightTimeout)
+	}
+	// A larger value overflows when converted to a time.Duration of seconds.
+	if maxSeconds := int64(math.MaxInt64 / time.Second); int64(config.PreflightTimeout) > maxSeconds {
+		return config, fmt.Errorf("config: preflight_timeout is '%d' seconds while it must be at most %d seconds", config.PreflightTimeout, maxSeconds)
 	}
 	if config.PreflightTimeout == 0 {
 		config.PreflightTimeout = 60
