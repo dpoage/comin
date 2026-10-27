@@ -41,7 +41,7 @@ func (n *NixFlakeLocal) IsStorePathExist(storePath string) bool {
 	return isStorePathExist(storePath)
 }
 func (n *NixFlakeLocal) CurrentSystem() (string, error) {
-	return utils.CurrentSystem()
+	return currentSystem()
 }
 
 func (n *NixFlakeLocal) ShowDerivation(ctx context.Context, flakeUrl, hostname string) (drvPath string, outPath string, err error) {

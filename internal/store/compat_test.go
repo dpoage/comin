@@ -1,9 +1,8 @@
 package store
 
-// C9: store.json stays loadable by be6025e's store.Load, which rejects
+// store.json stays loadable by be6025e's store.Load, which rejects
 // unknown fields (protojson.UnmarshalOptions{} defaults DiscardUnknown to
-// false). This is why every new comin state introduced by the override-lease
-// feature (internal/leasestate) lives OUTSIDE store.json.
+// false). Any new comin state therefore lives OUTSIDE store.json.
 //
 // This test pins be6025e's Store/Deployment/Generation wire schema as a
 // protodesc-constructed descriptor (no protoc, no be6025e checkout needed at
@@ -57,8 +56,7 @@ func msgField(name string, number int32, typeName string, repeated bool) *descri
 // be6025eStoreFile builds the be6025e (pre-round) wire schema for the
 // Generation, Deployment and Store messages: exactly the fields present in
 // internal/protobuf/services.proto's Generation/Deployment/Store messages
-// before this round, which this round does not change (all new state lives
-// in internal/leasestate instead).
+// before this round, which this round does not change.
 func be6025eStoreFile(t *testing.T) protoreflect.FileDescriptor {
 	t.Helper()
 	name := "be6025e_store_compat.proto"

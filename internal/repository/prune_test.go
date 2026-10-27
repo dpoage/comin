@@ -60,10 +60,10 @@ func TestFetchPrunesDeletedRemoteBranch(t *testing.T) {
 	h, err := localRef(t, r.Repository, "refs/remotes/origin/testing-x")
 	assert.Nil(t, err)
 	assert.Equal(t, endedCommit, h.String())
-	assert.Nil(t, r.Update(nil))
+	assert.Nil(t, r.Update())
 	assert.Equal(t, endedCommit, r.RepositoryStatus.SelectedCommitId)
 
-	// robot-override end: delete the branch on the remote, nothing else changes
+	// The remote branch is deleted; nothing else changes
 	assert.Nil(t, remote.Storer.RemoveReference("refs/heads/testing-x"))
 
 	r.Fetch([]string{"origin"})
@@ -71,7 +71,7 @@ func TestFetchPrunesDeletedRemoteBranch(t *testing.T) {
 	_, err = localRef(t, r.Repository, "refs/remotes/origin/testing-x")
 	assert.ErrorIs(t, err, plumbing.ErrReferenceNotFound)
 
-	// P2: the refs that still exist on the remote are untouched
+	// The refs that still exist on the remote are untouched
 	h, err = localRef(t, r.Repository, "refs/remotes/origin/main")
 	assert.Nil(t, err)
 	assert.Equal(t, mainCommit, h.String())
@@ -83,7 +83,7 @@ func TestFetchPrunesDeletedRemoteBranch(t *testing.T) {
 	r2, err := New(gitConfig, "", prometheus.New())
 	assert.Nil(t, err)
 	r2.Fetch([]string{"origin"})
-	assert.Nil(t, r2.Update(nil))
+	assert.Nil(t, r2.Update())
 	assert.Contains(t, r2.RepositoryStatus.Remotes[0].Testing.ErrorMsg, "doesn't exist")
 	assert.Equal(t, "", r2.RepositoryStatus.Remotes[0].Testing.CommitId)
 	assert.Equal(t, mainCommit, r2.RepositoryStatus.SelectedCommitId)

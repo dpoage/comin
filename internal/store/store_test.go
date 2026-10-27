@@ -6,6 +6,7 @@ import (
 	"github.com/nlewo/comin/internal/broker"
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestDeploymentCommitAndLoad(t *testing.T) {
@@ -46,7 +47,7 @@ func TestLastDeployment(t *testing.T) {
 	assert.Equal(t, "2", last.Uuid)
 }
 
-// C10: after a restart with exactly one stored deployment, that deployment
+// After a restart with exactly one stored deployment, that deployment
 // is comin's current/previous deployment. Mutant: revert the fix (len(...) >
 // 1 instead of > 0), which makes ok=false for exactly one deployment.
 func TestLastDeploymentWithExactlyOne(t *testing.T) {
@@ -79,7 +80,10 @@ func TestDeploymentInsert(t *testing.T) {
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "3", Operation: "switch"})
 	assert.True(t, hasEvicted)
 	assert.Equal(t, "1", evicted.Uuid)
-	assert.Equal(t, []string{"3", "2"}, uuids(s.DeploymentList()))
+	assertDeployments(t, []*protobuf.Deployment{
+		{Uuid: "3", Operation: "switch"},
+		{Uuid: "2", Operation: "switch"},
+	}, s.DeploymentList())
 
 	hasEvicted, _ = s.DeploymentInsert(&protobuf.Deployment{Uuid: "4", Operation: "test"})
 	assert.False(t, hasEvicted)
@@ -88,7 +92,12 @@ func TestDeploymentInsert(t *testing.T) {
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "6", Operation: "test"})
 	assert.True(t, hasEvicted)
 	assert.Equal(t, "4", evicted.Uuid)
-	assert.Equal(t, []string{"6", "5", "3", "2"}, uuids(s.DeploymentList()))
+	assertDeployments(t, []*protobuf.Deployment{
+		{Uuid: "6", Operation: "test"},
+		{Uuid: "5", Operation: "test"},
+		{Uuid: "3", Operation: "switch"},
+		{Uuid: "2", Operation: "switch"},
+	}, s.DeploymentList())
 
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "7", Operation: "switch"})
 	assert.True(t, hasEvicted)
@@ -126,6 +135,18 @@ func TestDeploymentInsertAtCapacityKeepsTheDeploymentInFlight(t *testing.T) {
 	assert.Equal(t, []string{a.Uuid, "old", b.Uuid}, uuids(s.DeploymentList()))
 }
 
+// assertDeployments compares deployments with proto.Equal so cloned
+// messages (internal protobuf state makes reflect.DeepEqual fail) are
+// still compared field by field, operation included.
+func assertDeployments(t *testing.T, expected, got []*protobuf.Deployment) {
+	t.Helper()
+	if assert.Len(t, got, len(expected)) {
+		for i := range expected {
+			assert.True(t, proto.Equal(expected[i], got[i]),
+				"deployment %d differs: expected %v, got %v", i, expected[i], got[i])
+		}
+	}
+}
 func uuids(dpls []*protobuf.Deployment) []string {
 	ids := make([]string, len(dpls))
 	for i, d := range dpls {

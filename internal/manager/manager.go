@@ -9,16 +9,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
-	"time"
 
 	"github.com/nlewo/comin/internal/broker"
 	"github.com/nlewo/comin/internal/builder"
 	"github.com/nlewo/comin/internal/deployer"
 	"github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/fetcher"
-	"github.com/nlewo/comin/internal/lease"
-	"github.com/nlewo/comin/internal/leasestate"
 	"github.com/nlewo/comin/internal/profile"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
@@ -27,11 +23,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
-
-// DefaultPollPeriod is how often the manager re-evaluates release (C3) and
-// drift (S4) state even when nothing was fetched, built, or deployed. It is
-// exported so tests can shrink it with SetPollPeriod.
-const DefaultPollPeriod = 30 * time.Second
 
 type Manager struct {
 	// The machine id of the current host. It is used to ensure
@@ -59,38 +50,6 @@ type Manager struct {
 	isSuspended bool
 
 	broker *broker.Broker
-
-	// leaseReader observes the override lease file (S1). A disabled
-	// reader (empty path) turns off the lease behaviours: the deploy
-	// gate admits everything, and nothing is deferred or released.
-	// Drift status and switch-latest stay on.
-	leaseReader *lease.Reader
-	// leaseState is comin's own cross-restart bookkeeping for the
-	// override-lease feature (lease-aware/released marks, drift-since,
-	// a pending switch-latest request); never part of store.json.
-	leaseState *leasestate.State
-	// pollPeriod bounds how long C3/S4 can go unevaluated when nothing
-	// else wakes the manager's loop.
-	pollPeriod time.Duration
-
-	// deferred is the latest main generation the deploy gate refused;
-	// offerDeferred offers it once the gate may admit it.
-	//
-	// Lock order: deferredMu, like leasestate.State's own mutex, is a
-	// leaf. Nothing else is locked, no fetcher method is called and no
-	// channel is sent on while it is held, and the manager holds none of
-	// its locks while it calls the fetcher, the deployer, the store or
-	// the executor. FetchAndBuild receives RepositoryStatusCh, which
-	// the fetcher sends on while holding its f.mu, so nothing reached
-	// from FetchAndBuild may take f.mu: the only fetcher method the
-	// deploy gate calls, IsAncestor, takes no fetcher lock. The fetcher
-	// calls excludedTestingHeads from its own goroutine with no fetcher
-	// lock held; it takes only the store's and leasestate's locks. The
-	// deployer's mutex is held only around non-blocking (select with
-	// default) channel sends, and the deployer calls the gate (its
-	// admission func) with it released.
-	deferredMu sync.Mutex
-	deferred   *protobuf.Generation
 }
 
 func New(s *store.Store,
@@ -105,8 +64,6 @@ func New(s *store.Store,
 	deployConfirmer *Confirmer,
 	broker *broker.Broker,
 	configurationOperations ConfigurationOperations,
-	leaseReader *lease.Reader,
-	leaseState *leasestate.State,
 ) *Manager {
 
 	m := &Manager{
@@ -124,61 +81,8 @@ func New(s *store.Store,
 		DeployConfirmer:         deployConfirmer,
 		broker:                  broker,
 		configurationOperations: configurationOperations,
-		leaseReader:             leaseReader,
-		leaseState:              leaseState,
-		pollPeriod:              DefaultPollPeriod,
-	}
-	deployer.SetAdmission(m.admitQueued)
-	fetcher.SetExcludedTestingHeads(m.excludedTestingHeads)
-	// A lease-state.json absent at start (never written, or moved aside)
-	// has forgotten which testing deployments ended, and the heads of
-	// ended overrides are still on the remote: exclude the head of every
-	// stored testing deployment from selection and the deploy gate
-	// (releasedHeads), persisted, so it holds once the file exists again.
-	// Ownership is not touched, so main keeps deploying (a first start of
-	// the fork over a pre-fork store is this case too). The head of a
-	// stored deployment whose system the machine runs now is the
-	// developer's running test, not an ended one: it is not excluded, so
-	// nothing activates over it that did not before.
-	if leaseState.AbsentAtLoad() && leaseReader.Enabled() {
-		current, err := executor.CurrentSystem()
-		if err != nil {
-			logrus.Warnf("manager: the current system cannot be read (%s): no stored testing head is exempted from the exclusion", err)
-		}
-		stored := s.DeploymentList()
-		running := map[leasestate.Head]bool{}
-		for _, d := range stored {
-			if g := d.GetGeneration(); isTestingDeployment(d) && err == nil && current != "" && g.GetOutPath() == current {
-				running[leasestate.Head{Remote: g.GetSelectedRemoteName(), Branch: g.GetSelectedBranchName(), Commit: g.GetSelectedCommitId()}] = true
-			}
-		}
-		var heads []leasestate.Head
-		for _, d := range stored {
-			g := d.GetGeneration()
-			h := leasestate.Head{Remote: g.GetSelectedRemoteName(), Branch: g.GetSelectedBranchName(), Commit: g.GetSelectedCommitId()}
-			if isTestingDeployment(d) && !running[h] {
-				heads = append(heads, h)
-			}
-		}
-		if err := leaseState.ExcludeHeads(heads); err != nil {
-			logrus.Errorf("manager: could not persist the excluded testing heads: %s", err)
-		} else if len(heads) > 0 {
-			logrus.Infof("manager: no lease state at start: the heads of the %d stored testing deployments are excluded", len(heads))
-		}
-	}
-	// A switch-latest request made before a restart and never resolved
-	// is re-armed here, before the gRPC server can accept a new one, so
-	// a request arriving during startup is not deployed twice.
-	if leaseState.PendingSwitchLatest() {
-		deployer.SubmitLatest(m.resolveSwitchLatest)
 	}
 	return m
-}
-
-// SetPollPeriod overrides the default poll period. It must be called before
-// Run.
-func (m *Manager) SetPollPeriod(d time.Duration) {
-	m.pollPeriod = d
 }
 
 func (m *Manager) GetState() *protobuf.State {
@@ -196,52 +100,16 @@ func (m *Manager) toState() *protobuf.State {
 		Store:           m.storage.GetState(),
 		BuildConfirmer:  m.BuildConfirmer.status(),
 		DeployConfirmer: m.DeployConfirmer.status(),
-		Drift:           m.driftStatus(time.Now().UTC()),
 	}
 }
 
-// SwitchDeploymentLatest always deploys the S4 expected generation with
-// "switch", resolved at the moment the deployer actually starts deploying
-// it (not now): if a deployment is currently in flight, the expected
-// generation may change by the time this request reaches the front of the
-// queue (e.g. a testing deployment that just finished becomes expected
-// under a live git lease). It fails with "manager: no previous deployment"
-// when there is nothing to switch to. The request is persisted until the
-// deployer resolves it, so a comin restart in between does not drop it.
 func (m *Manager) SwitchDeploymentLatest() error {
-	if _, err := m.resolveExpectedGeneration(); err != nil {
-		return err
+	ok, latest := m.storage.LastDeployment()
+	if !ok {
+		return fmt.Errorf("manager: no previous deployment")
 	}
-	if err := m.leaseState.SetPendingSwitchLatest(true); err != nil {
-		return err
-	}
-	m.deployer.SubmitLatest(m.resolveSwitchLatest)
+	m.deployer.Submit(latest.Generation, "switch")
 	return nil
-}
-
-// resolveExpectedGeneration resolves the S4 expected generation.
-func (m *Manager) resolveExpectedGeneration() (*protobuf.Generation, error) {
-	dpl := m.expectedDeployment(m.storage.DeploymentList(), m.leaseReader.Observe().IsGit())
-	if dpl == nil {
-		return nil, fmt.Errorf("manager: no previous deployment")
-	}
-	return dpl.Generation, nil
-}
-
-// resolveSwitchLatest is the resolver of every switch-latest request; the
-// deployer calls it at deploy time. Resolving settles the request whether
-// or not it finds a generation, so it clears the persisted pending flag
-// either way.
-func (m *Manager) resolveSwitchLatest() (*protobuf.Generation, error) {
-	g, err := m.resolveExpectedGeneration()
-	m.clearPendingSwitchLatest()
-	return g, err
-}
-
-func (m *Manager) clearPendingSwitchLatest() {
-	if err := m.leaseState.SetPendingSwitchLatest(false); err != nil {
-		logrus.Errorf("manager: could not clear the pending switch-latest request: %s", err)
-	}
 }
 
 func (m *Manager) Suspend() error {
@@ -323,10 +191,7 @@ func (m *Manager) FetchAndBuild(ctx context.Context) {
 					logrus.Error(err)
 					continue
 				}
-				operation, ok := m.leaseDeployDecision(&generation)
-				if !ok {
-					continue
-				}
+				operation := m.getOperationFromConfigurationOperations(generation.SelectedRemoteName, generation.SelectedBranchName)
 				m.deployer.Submit(&generation, operation)
 			}
 		}
@@ -364,53 +229,26 @@ func (m *Manager) Run(ctx context.Context) {
 	m.FetchAndBuild(ctx)
 	m.deployer.Run(ctx)
 
-	ticker := time.NewTicker(m.pollPeriod)
-	defer ticker.Stop()
-	// C3, the deferred tier generation and S4 must be evaluated at least
-	// once per poll period even when the fetcher emits nothing (it only
-	// emits when the selected commit changes), so a lease that ends with
-	// no new commits is still released within one poll period.
-	m.poll(time.Now().UTC())
-
 	for {
 		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.poll(time.Now().UTC())
 		case <-m.stateRequestCh:
 			m.stateResultCh <- m.toState()
 		case dpl := <-m.deployer.DeploymentDoneCh:
-			if m.leaseReader.Enabled() && isTestingDeployment(dpl) {
-				if err := m.leaseState.MarkLeaseAware(dpl.Uuid); err != nil {
-					logrus.Errorf("manager: could not mark deployment %s lease-aware: %s", dpl.Uuid, err)
-				}
-			}
 			m.prometheus.SetDeploymentInfo(dpl.Generation.SelectedCommitId, dpl.Status)
 			getsEvicted, evicted := m.storage.DeploymentInsertAndCommit(dpl)
 
-			if getsEvicted {
-				// We remove the evicted deployment profile
-				// path only if this profile path is not used
-				// by any still alive other deployments, and
-				// its lease marks only once no row of it is
-				// left in the store.
-				uuidAlive, profileAlive := false, false
+			// We remove the evicted deployment profile
+			// path only if this profile path is not used
+			// by any still alive other deployments.
+			if getsEvicted && evicted.ProfilePath != "" {
+				alive := false
 				for _, d := range m.storage.DeploymentList() {
-					if d.Uuid == evicted.Uuid {
-						uuidAlive = true
-					}
 					if d.ProfilePath == evicted.ProfilePath {
-						profileAlive = true
+						alive = true
 					}
 				}
-				if evicted.ProfilePath != "" && !profileAlive {
+				if !alive {
 					_ = profile.RemoveProfilePath(evicted.ProfilePath)
-				}
-				if !uuidAlive {
-					if err := m.leaseState.Forget(evicted.Uuid); err != nil {
-						logrus.Errorf("manager: could not forget the marks of the evicted deployment %s: %s", evicted.Uuid, err)
-					}
 				}
 			}
 			m.needToReboot = m.executor.NeedToReboot(dpl.Generation.OutPath, dpl.Operation)
@@ -419,10 +257,6 @@ func (m *Manager) Run(ctx context.Context) {
 				m.broker.Publish(&protobuf.Event{Type: &protobuf.Event_RebootRequired_{RebootRequired: e}})
 			}
 			m.prometheus.SetHostInfo(m.needToReboot, m.isSuspended)
-			// A deployment has just finished: a lease could now be
-			// releasable (C3), a deferred generation offerable, and
-			// the drift episode has changed, even before the next tick.
-			m.poll(time.Now().UTC())
 			if dpl.RestartComin.GetValue() {
 				// TODO: stop contexts
 				logrus.Infof("manager: comin needs to be restarted")

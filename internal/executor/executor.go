@@ -3,8 +3,14 @@ package executor
 import (
 	"context"
 
+	"github.com/nlewo/comin/internal/utils"
 	"github.com/sirupsen/logrus"
 )
+
+// currentSystem reads the store path the host is currently running. It
+// is a variable so a test can point the executors at a scratch symlink,
+// on hosts without /run/current-system.
+var currentSystem = utils.CurrentSystem
 
 type EvalFunc func(ctx context.Context, repositoryPath, repositorySubdir, commitId, systemAttr, hostname string) (drvPath string, outPath string, machineId string, err error)
 type BuildFunc func(ctx context.Context, drvPath string) error

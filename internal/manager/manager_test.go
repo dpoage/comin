@@ -11,8 +11,6 @@ import (
 	"github.com/nlewo/comin/internal/deployer"
 	"github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/fetcher"
-	"github.com/nlewo/comin/internal/lease"
-	"github.com/nlewo/comin/internal/leasestate"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/scheduler"
@@ -23,15 +21,6 @@ import (
 )
 
 var emptyConfigurationOperations = map[string]map[string]string{}
-
-// noLease returns a disabled lease reader and a fresh, scratch lease state:
-// the "overrideLeaseFile is null" configuration, which must leave be6025e's
-// deploy decisions unchanged (Preserve).
-func noLease(t *testing.T) (*lease.Reader, *leasestate.State) {
-	s, err := leasestate.Load(t.TempDir() + "/lease-state.json")
-	assert.NoError(t, err)
-	return lease.NewReader(""), s
-}
 
 var mkDeployerMock = func(t *testing.T) *deployer.Deployer {
 	var deployFunc = func(context.Context, string, string) (bool, string, error) {
@@ -114,8 +103,7 @@ func TestBuild(t *testing.T) {
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	lr, ls := noLease(t)
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations, lr, ls)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations)
 	go m.Run(t.Context())
 	assert.False(t, m.Fetcher.GetState().IsFetching.GetValue())
 	assert.False(t, m.Builder.State().IsEvaluating.GetValue())
@@ -229,8 +217,7 @@ func TestDeploy(t *testing.T) {
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	lr, ls := noLease(t)
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations, lr, ls)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations)
 	go m.Run(t.Context())
 	assert.False(t, m.Fetcher.GetState().IsFetching.GetValue())
 	assert.False(t, m.Builder.State().IsEvaluating.GetValue())
@@ -260,8 +247,7 @@ func TestIncorrectMachineId(t *testing.T) {
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	lr, ls := noLease(t)
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "the-test-machine-id", e, bc, dc, bk, emptyConfigurationOperations, lr, ls)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "the-test-machine-id", e, bc, dc, bk, emptyConfigurationOperations)
 	go m.Run(t.Context())
 
 	f.TriggerFetch([]string{"remote"})
@@ -270,7 +256,7 @@ func TestIncorrectMachineId(t *testing.T) {
 	}
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.False(c, m.GetState().Builder.IsBuilding.GetValue())
+		assert.False(t, m.GetState().Builder.IsBuilding.GetValue())
 	}, 5*time.Second, 100*time.Millisecond)
 }
 
@@ -293,8 +279,7 @@ func TestCorrectMachineId(t *testing.T) {
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	lr, ls := noLease(t)
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "the-test-machine-id", e, bc, dc, bk, emptyConfigurationOperations, lr, ls)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "the-test-machine-id", e, bc, dc, bk, emptyConfigurationOperations)
 	go m.Run(t.Context())
 
 	f.TriggerFetch([]string{"remote"})
@@ -303,7 +288,7 @@ func TestCorrectMachineId(t *testing.T) {
 	}
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.True(c, m.GetState().Builder.IsBuilding.GetValue())
+		assert.True(t, m.GetState().Builder.IsBuilding.GetValue())
 	}, 5*time.Second, 100*time.Millisecond)
 }
 
@@ -326,8 +311,7 @@ func TestManagerWithDarwinConfiguration(t *testing.T) {
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	lr, ls := noLease(t)
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "darwin-machine-id", e, bc, dc, bk, emptyConfigurationOperations, lr, ls)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "darwin-machine-id", e, bc, dc, bk, emptyConfigurationOperations)
 
 	// Verify the manager was created with the correct configuration attribute
 	assert.Equal(t, "darwin-machine-id", m.machineId)
