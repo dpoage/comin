@@ -241,3 +241,20 @@ func headSignedBy(r *git.Repository, publicKeys []string) (signedBy *openpgp.Ent
 	}
 	return nil, fmt.Errorf("commit %s is not signed", head.Hash())
 }
+
+// commitSignedBy returns the entity that signed commitId with one of
+// publicKeys, or nil when no configured key signed the commit.
+func commitSignedBy(r *git.Repository, commitId plumbing.Hash, publicKeys []string) (signedBy *openpgp.Entity, err error) {
+	commit, err := r.CommitObject(commitId)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range publicKeys {
+		entity, err := commit.Verify(k)
+		if err == nil {
+			logrus.Debugf("Commit %s signed by %s", commitId, entity.PrimaryIdentity().Name)
+			return entity, nil
+		}
+	}
+	return nil, fmt.Errorf("commit %s is not signed", commitId)
+}

@@ -210,6 +210,12 @@ func (r *repository) Update() error {
 
 	if len(r.gpgPubliKeys) > 0 {
 		r.RepositoryStatus.SelectedCommitShouldBeSigned = wrapperspb.Bool(true)
+		// The verdict of every branch head this update read, so each
+		// candidate is verified against its own commit and not HEAD.
+		for _, remote := range r.RepositoryStatus.Remotes {
+			setBranchSigned(remote.Main, r.Repository, r.gpgPubliKeys)
+			setBranchSigned(remote.Testing, r.Repository, r.gpgPubliKeys)
+		}
 		signedBy, err := headSignedBy(r.Repository, r.gpgPubliKeys)
 		if err != nil {
 			r.RepositoryStatus.ErrorMsg = err.Error()
@@ -225,4 +231,20 @@ func (r *repository) Update() error {
 		r.RepositoryStatus.SelectedCommitShouldBeSigned = wrapperspb.Bool(false)
 	}
 	return nil
+}
+
+// setBranchSigned records in branch the signature verdict of the commit
+// branch.CommitId, verified with the configured GPG public keys.
+func setBranchSigned(branch *pb.Branch, repo *git.Repository, publicKeys []string) {
+	if branch == nil || branch.CommitId == "" {
+		return
+	}
+	signedBy, _ := commitSignedBy(repo, plumbing.NewHash(branch.CommitId), publicKeys)
+	if signedBy == nil {
+		branch.Signed = wrapperspb.Bool(false)
+		branch.SignedBy = ""
+	} else {
+		branch.Signed = wrapperspb.Bool(true)
+		branch.SignedBy = signedBy.PrimaryIdentity().Name
+	}
 }
