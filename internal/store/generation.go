@@ -10,9 +10,11 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/google/uuid"
 	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 type EvalStatus int64
@@ -91,7 +93,7 @@ func StringToBuildStatus(statusStr string) BuildStatus {
 	}
 }
 
-func (s *Store) NewGeneration(hostname, repositoryPath, repositoryDir, systemAttr string, rs *protobuf.RepositoryStatus) protobuf.Generation {
+func (s *Store) NewGeneration(hostname, repositoryPath, repositoryDir, systemAttr string, c repository.Candidate) protobuf.Generation {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	g := &protobuf.Generation{
@@ -100,14 +102,14 @@ func (s *Store) NewGeneration(hostname, repositoryPath, repositoryDir, systemAtt
 		RepositorySubdir:        repositoryDir,
 		SystemAttr:              systemAttr,
 		Hostname:                hostname,
-		SelectedRemoteName:      rs.SelectedRemoteName,
-		SelectedBranchName:      rs.SelectedBranchName,
-		SelectedCommitId:        rs.SelectedCommitId,
-		SelectedCommitMsg:       rs.SelectedCommitMsg,
-		SelectedBranchIsTesting: rs.SelectedBranchIsTesting,
-		MainRemoteName:          rs.MainBranchName,
-		MainBranchName:          rs.MainBranchName,
-		MainCommitId:            rs.MainCommitId,
+		SelectedRemoteName:      c.Remote,
+		SelectedBranchName:      c.Branch,
+		SelectedCommitId:        c.CommitId,
+		SelectedCommitMsg:       c.CommitMsg,
+		SelectedBranchIsTesting: wrapperspb.Bool(c.Testing),
+		MainRemoteName:          c.MainBranchName,
+		MainBranchName:          c.MainBranchName,
+		MainCommitId:            c.MainCommitId,
 		EvalStatus:              EvalInit.String(),
 		BuildStatus:             BuildInit.String(),
 	}

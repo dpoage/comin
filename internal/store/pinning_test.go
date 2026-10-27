@@ -6,8 +6,8 @@ import (
 
 	"github.com/nlewo/comin/internal/broker"
 	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -98,7 +98,7 @@ func TestDeploymentListReturnsCopy(t *testing.T) {
 func TestGetStateReturnsCopy(t *testing.T) {
 	s := newTestStore(t)
 	s.DeploymentInsert(&protobuf.Deployment{Uuid: "1", Operation: "switch"})
-	s.NewGeneration("host", "path", "dir", "attr", &protobuf.RepositoryStatus{})
+	s.NewGeneration("host", "path", "dir", "attr", repository.Candidate{})
 
 	state := s.GetState()
 	state.Deployments[0].Uuid = "mutated"
@@ -114,8 +114,7 @@ func TestGetStateReturnsCopy(t *testing.T) {
 // NewGeneration returns a deep copy.
 func TestNewGenerationReturnsDeepCopy(t *testing.T) {
 	s := newTestStore(t)
-	rs := &protobuf.RepositoryStatus{SelectedBranchIsTesting: wrapperspb.Bool(false)}
-	g := s.NewGeneration("host", "path", "dir", "attr", rs)
+	g := s.NewGeneration("host", "path", "dir", "attr", repository.Candidate{Testing: false})
 	g.SelectedBranchIsTesting.Value = true
 	g.Hostname = "mutated"
 

@@ -5,6 +5,7 @@ import (
 
 	"github.com/nlewo/comin/internal/broker"
 	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/proto"
 )
@@ -160,5 +161,5 @@ func TestNewGeneration(t *testing.T) {
 	bk := broker.New()
 	bk.Start()
 	s, _ := New(bk, tmp+"/filename", tmp+"/gcroots", 2, 2)
-	s.NewGeneration("hostname", "repositoryPath", "repositoryDir", "systemAttr", &protobuf.RepositoryStatus{})
+	s.NewGeneration("hostname", "repositoryPath", "repositoryDir", "systemAttr", repository.Candidate{})
 }
