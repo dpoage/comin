@@ -7,8 +7,10 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/nlewo/comin/internal/prometheus"
+	pb "github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/types"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestNew(t *testing.T) {
@@ -785,4 +787,18 @@ func TestUpdateGpg(t *testing.T) {
 	assert.False(t, r.RepositoryStatus.SelectedCommitSigned.GetValue())
 	assert.Equal(t, "", r.RepositoryStatus.SelectedCommitSignedBy)
 	assert.False(t, r.RepositoryStatus.SelectedCommitShouldBeSigned.GetValue())
+}
+
+func TestSetBranchSignedUnreadableCommit(t *testing.T) {
+	r := &repository{gpgPubliKeys: []string{"key"}}
+	r.Repository, _ = repositoryOpen(types.GitConfig{Path: t.TempDir()})
+	branch := &pb.Branch{
+		CommitId: "1111111111111111111111111111111111111111",
+		Signed:   wrapperspb.Bool(true),
+		SignedBy: "test <test@comin.space>",
+	}
+	r.setBranchSigned(branch)
+	assert.False(t, branch.Signed.GetValue())
+	assert.NotNil(t, branch.Signed)
+	assert.Equal(t, "", branch.SignedBy)
 }

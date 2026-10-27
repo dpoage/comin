@@ -8,8 +8,10 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/nlewo/comin/internal/prometheus"
+	pb "github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/types"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // originRemote returns the remote configuration of a comin repository
@@ -315,4 +317,162 @@ func TestCandidatesSignatureVerdict(t *testing.T) {
 		assert.False(t, candidates[1].Verified)
 		assert.Equal(t, "", candidates[1].SignedBy)
 	})
+}
+
+// A fetch error on the only remote keeps the main candidate as the
+// fallback under the stale testing candidate.
+func TestCandidatesFetchErrorOnSingleRemote(t *testing.T) {
+	for _, withTesting := range []bool{false, true} {
+		r1Dir := t.TempDir()
+		r1, _ := initRemoteRepostiory(r1Dir, withTesting)
+		cMain, msgMain := headOfBranch(t, r1, "main")
+		cTesting, msgTesting := "", ""
+		if withTesting {
+			_, _ = commitFile(r1, r1Dir, "testing", "file-4")
+			cTesting, msgTesting = headOfBranch(t, r1, "testing")
+		}
+
+		r := newCominRepository(t, "", originRemote("origin", r1Dir))
+		r.Fetch([]string{"origin"})
+		assert.Nil(t, r.Update())
+		assert.Nil(t, os.RemoveAll(r1Dir))
+		r.Fetch([]string{"origin"})
+		_ = r.Update()
+		assert.NotEqual(t, "", GetRemote(r.RepositoryStatus, "origin").FetchErrorMsg)
+
+		expected := []Candidate{{
+			Remote: "origin", Branch: "main",
+			CommitId: cMain, CommitMsg: msgMain,
+			MainCommitId:   cMain,
+			MainRemoteName: "origin", MainBranchName: "main",
+			Verified: true,
+		}}
+		if withTesting {
+			expected = append([]Candidate{{
+				Remote: "origin", Branch: "testing",
+				CommitId: cTesting, CommitMsg: msgTesting,
+				Testing:        true,
+				MainCommitId:   cMain,
+				MainRemoteName: "origin", MainBranchName: "main",
+				Verified: true,
+			}}, expected...)
+		}
+		assert.Equal(t, expected, Candidates(r.GetRepositoryStatus()))
+	}
+}
+
+func newSigningCominRepository(t *testing.T, url string) *repository {
+	t.Helper()
+	r, err := New(types.GitConfig{
+		Path:              t.TempDir(),
+		GpgPublicKeyPaths: []string{"./test.public"},
+		Remotes:           []types.Remote{originRemote("origin", url)},
+	}, "", prometheus.New())
+	assert.Nil(t, err)
+	return r
+}
+
+// readOnlyWorktree makes the checkout of any new file in r fail.
+func readOnlyWorktree(t *testing.T, r *repository) {
+	t.Helper()
+	assert.Nil(t, os.Chmod(r.GitConfig.Path, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(r.GitConfig.Path, 0o755) })
+}
+
+// Every candidate carries the verdict of its own commit even when Update
+// fails at the checkout.
+func TestCandidatesSignatureVerdictCheckoutFails(t *testing.T) {
+	f, _ := os.Open("./test.private")
+	entityList, _ := openpgp.ReadArmoredKeyRing(f)
+	entity := entityList[0]
+
+	for _, branch := range []string{"main", "testing"} {
+		t.Run("signed then unsigned "+branch, func(t *testing.T) {
+			r1Dir := t.TempDir()
+			r1, _ := initRemoteRepostiory(r1Dir, true)
+			_, _ = commitFileAndSign(r1, r1Dir, branch, "file-signed", entity)
+
+			r := newSigningCominRepository(t, r1Dir)
+			r.Fetch([]string{"origin"})
+			assert.Nil(t, r.Update())
+			candidates := Candidates(r.GetRepositoryStatus())
+			assert.True(t, candidates[0].Verified)
+
+			unsigned, _ := commitFile(r1, r1Dir, branch, "file-unsigned")
+			readOnlyWorktree(t, r)
+			r.Fetch([]string{"origin"})
+			assert.NotNil(t, r.Update())
+
+			candidates = Candidates(r.GetRepositoryStatus())
+			assert.Equal(t, unsigned, candidates[0].CommitId)
+			assert.False(t, candidates[0].Verified)
+			assert.Equal(t, "", candidates[0].SignedBy)
+		})
+
+		t.Run("unsigned "+branch+" on the first update", func(t *testing.T) {
+			r1Dir := t.TempDir()
+			r1, _ := initRemoteRepostiory(r1Dir, true)
+			unsigned, _ := commitFile(r1, r1Dir, branch, "file-unsigned")
+
+			r := newSigningCominRepository(t, r1Dir)
+			readOnlyWorktree(t, r)
+			r.Fetch([]string{"origin"})
+			assert.NotNil(t, r.Update())
+
+			candidates := Candidates(r.GetRepositoryStatus())
+			assert.Equal(t, unsigned, candidates[0].CommitId)
+			for _, c := range candidates {
+				assert.False(t, c.Verified, c.CommitId)
+				assert.Equal(t, "", c.SignedBy)
+			}
+		})
+	}
+}
+
+// Update writes branch.signed iff GPG keys are configured; Candidate.Verified
+// relies on its presence.
+func TestBranchSignedWrittenIffKeysConfigured(t *testing.T) {
+	r1Dir := t.TempDir()
+	r1, _ := initRemoteRepostiory(r1Dir, true)
+	_, _ = commitFile(r1, r1Dir, "testing", "file-4")
+
+	r := newSigningCominRepository(t, r1Dir)
+	r.Fetch([]string{"origin"})
+	assert.Nil(t, r.Update())
+	remote := GetRemote(r.RepositoryStatus, "origin")
+	assert.NotNil(t, remote.Main.Signed)
+	assert.NotNil(t, remote.Testing.Signed)
+
+	r = newCominRepository(t, "", originRemote("origin", r1Dir))
+	r.Fetch([]string{"origin"})
+	assert.Nil(t, r.Update())
+	remote = GetRemote(r.RepositoryStatus, "origin")
+	assert.Nil(t, remote.Main.Signed)
+	assert.Nil(t, remote.Testing.Signed)
+}
+
+// The testing candidate takes no verdict from a testing branch at another
+// commit.
+func TestCandidatesTestingVerdictOfSelectedCommit(t *testing.T) {
+	rs := &pb.RepositoryStatus{
+		SelectedCommitId:             "testing-commit",
+		SelectedRemoteName:           "origin",
+		SelectedBranchName:           "testing",
+		SelectedBranchIsTesting:      wrapperspb.Bool(true),
+		SelectedCommitShouldBeSigned: wrapperspb.Bool(true),
+		Remotes: []*pb.Remote{{
+			Name: "origin",
+			Main: &pb.Branch{Name: "main"},
+			Testing: &pb.Branch{
+				Name:     "testing",
+				CommitId: "other-commit",
+				Signed:   wrapperspb.Bool(true),
+				SignedBy: "test <test@comin.space>",
+			},
+		}},
+	}
+	candidates := Candidates(rs)
+	assert.Equal(t, 1, len(candidates))
+	assert.False(t, candidates[0].Verified)
+	assert.Equal(t, "", candidates[0].SignedBy)
 }

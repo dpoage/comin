@@ -138,6 +138,7 @@ func (r *repository) Update() error {
 		remote.Main.CommitId = head.String()
 		remote.Main.CommitMsg = msg
 		remote.Main.OnTopOf = r.RepositoryStatus.MainCommitId
+		r.setBranchSigned(remote.Main)
 
 		if selectedCommitId == "" {
 			selectedCommitId = head.String()
@@ -188,6 +189,7 @@ func (r *repository) Update() error {
 		remote.Testing.CommitId = head.String()
 		remote.Testing.CommitMsg = msg
 		remote.Testing.OnTopOf = r.RepositoryStatus.MainCommitId
+		r.setBranchSigned(remote.Testing)
 
 		if head.String() != selectedCommitId && head.String() != r.RepositoryStatus.MainCommitId {
 			selectedCommitId = head.String()
@@ -210,12 +212,6 @@ func (r *repository) Update() error {
 
 	if len(r.gpgPubliKeys) > 0 {
 		r.RepositoryStatus.SelectedCommitShouldBeSigned = wrapperspb.Bool(true)
-		// The verdict of every branch head this update read, so each
-		// candidate is verified against its own commit and not HEAD.
-		for _, remote := range r.RepositoryStatus.Remotes {
-			setBranchSigned(remote.Main, r.Repository, r.gpgPubliKeys)
-			setBranchSigned(remote.Testing, r.Repository, r.gpgPubliKeys)
-		}
 		signedBy, err := headSignedBy(r.Repository, r.gpgPubliKeys)
 		if err != nil {
 			r.RepositoryStatus.ErrorMsg = err.Error()
@@ -233,13 +229,16 @@ func (r *repository) Update() error {
 	return nil
 }
 
-// setBranchSigned records in branch the signature verdict of the commit
-// branch.CommitId, verified with the configured GPG public keys.
-func setBranchSigned(branch *pb.Branch, repo *git.Repository, publicKeys []string) {
-	if branch == nil || branch.CommitId == "" {
+// setBranchSigned records in branch the signature verdict of
+// branch.CommitId. It writes branch.Signed iff GPG keys are configured.
+func (r *repository) setBranchSigned(branch *pb.Branch) {
+	if len(r.gpgPubliKeys) == 0 {
 		return
 	}
-	signedBy, _ := commitSignedBy(repo, plumbing.NewHash(branch.CommitId), publicKeys)
+	signedBy, err := commitSignedBy(r.Repository, plumbing.NewHash(branch.CommitId), r.gpgPubliKeys)
+	if err != nil {
+		logrus.Errorf("repository: failed to verify the signature of commit %s: %s", branch.CommitId, err)
+	}
 	if signedBy == nil {
 		branch.Signed = wrapperspb.Bool(false)
 		branch.SignedBy = ""

@@ -228,22 +228,19 @@ func headSignedBy(r *git.Repository, publicKeys []string) (signedBy *openpgp.Ent
 	if head == nil {
 		return nil, fmt.Errorf("repository HEAD should not be nil")
 	}
-	commit, err := r.CommitObject(head.Hash())
+	signedBy, err = commitSignedBy(r, head.Hash(), publicKeys)
 	if err != nil {
 		return nil, err
 	}
-	for _, k := range publicKeys {
-		entity, err := commit.Verify(k)
-		if err == nil {
-			logrus.Debugf("Commit %s signed by %s", head.Hash(), entity.PrimaryIdentity().Name)
-			return entity, nil
-		}
+	if signedBy == nil {
+		return nil, fmt.Errorf("commit %s is not signed", head.Hash())
 	}
-	return nil, fmt.Errorf("commit %s is not signed", head.Hash())
+	return signedBy, nil
 }
 
 // commitSignedBy returns the entity that signed commitId with one of
-// publicKeys, or nil when no configured key signed the commit.
+// publicKeys, or nil when no configured key signed it. The error reports
+// only a failure to read the commit.
 func commitSignedBy(r *git.Repository, commitId plumbing.Hash, publicKeys []string) (signedBy *openpgp.Entity, err error) {
 	commit, err := r.CommitObject(commitId)
 	if err != nil {
@@ -256,5 +253,5 @@ func commitSignedBy(r *git.Repository, commitId plumbing.Hash, publicKeys []stri
 			return entity, nil
 		}
 	}
-	return nil, fmt.Errorf("commit %s is not signed", commitId)
+	return nil, nil
 }

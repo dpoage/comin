@@ -10,21 +10,28 @@ type Candidate struct {
 	Testing                             bool
 	MainCommitId                        string // the main commit the candidate sits on (copied into the generation)
 	MainRemoteName, MainBranchName      string // copied from rs.main_remote_name/main_branch_name (generation fields)
-	Verified                            bool   // false iff signing is required and no configured key signed CommitId
-	SignedBy                            string // the signer's primary identity name when signed
+	// Verified is false iff signing is required and no configured key
+	// signed CommitId: the branch verdict when Update wrote one (it does
+	// iff GPG keys are configured), else !selected_commit_should_be_signed.
+	Verified bool
+	SignedBy string // the signer's primary identity name when signed
 }
 
 // Candidates returns the deployable commits of a repository status, most
 // preferred first: the testing head when a testing branch is selected,
-// then the main commit. It reads only rs.
+// then the main commit. The main commit is taken from the first remote in
+// rs.remotes order holding it without a fetch error, else from the first
+// remote holding it. It reads only rs.
 func Candidates(rs *pb.RepositoryStatus) []Candidate {
-	verifiedSigned := !rs.SelectedCommitShouldBeSigned.GetValue()
 	candidates := []Candidate{}
 
-	// The testing head is a candidate only when selected: when it equals
-	// the main head, upstream selects main and there is a single candidate.
 	if rs.SelectedBranchIsTesting.GetValue() {
-		testing := Candidate{
+		var branch *pb.Branch
+		if remote := GetRemote(rs, rs.SelectedRemoteName); remote != nil && remote.Testing.GetCommitId() == rs.SelectedCommitId {
+			branch = remote.Testing
+		}
+		verified, signedBy := verdict(rs, branch)
+		candidates = append(candidates, Candidate{
 			Remote:         rs.SelectedRemoteName,
 			Branch:         rs.SelectedBranchName,
 			CommitId:       rs.SelectedCommitId,
@@ -33,41 +40,57 @@ func Candidates(rs *pb.RepositoryStatus) []Candidate {
 			MainCommitId:   rs.MainCommitId,
 			MainRemoteName: rs.MainRemoteName,
 			MainBranchName: rs.MainBranchName,
-			Verified:       verifiedSigned,
-		}
-		if remote := GetRemote(rs, rs.SelectedRemoteName); remote != nil && remote.Testing != nil {
-			testing.Verified = verifiedSigned || remote.Testing.Signed.GetValue()
-			testing.SignedBy = remote.Testing.SignedBy
-		}
-		candidates = append(candidates, testing)
+			Verified:       verified,
+			SignedBy:       signedBy,
+		})
 	}
 
-	// The main candidate carries the remote and branch that really hold
-	// main_commit_id: the first fetched remote whose main branch is at
-	// that commit. rs.main_remote_name is not used here because it is
-	// empty after a restart when the main head did not move.
+	// rs.main_remote_name is empty after a restart when the main head did
+	// not move, so the remote is found by its main commit.
+	remote := mainRemote(rs)
+	if remote == nil {
+		return candidates
+	}
+	verified, signedBy := verdict(rs, remote.Main)
+	return append(candidates, Candidate{
+		Remote:         remote.Name,
+		Branch:         remote.Main.Name,
+		CommitId:       rs.MainCommitId,
+		CommitMsg:      remote.Main.CommitMsg,
+		MainCommitId:   rs.MainCommitId,
+		MainRemoteName: rs.MainRemoteName,
+		MainBranchName: rs.MainBranchName,
+		Verified:       verified,
+		SignedBy:       signedBy,
+	})
+}
+
+// mainRemote returns the remote holding rs.main_commit_id, preferring one
+// without a fetch error, or nil.
+func mainRemote(rs *pb.RepositoryStatus) *pb.Remote {
 	if rs.MainCommitId == "" {
-		return candidates
+		return nil
 	}
+	var fallback *pb.Remote
 	for _, remote := range rs.Remotes {
-		if remote.FetchErrorMsg != "" || remote.Main == nil {
+		if remote.Main.GetCommitId() != rs.MainCommitId {
 			continue
 		}
-		if remote.Main.CommitId != rs.MainCommitId {
-			continue
+		if remote.FetchErrorMsg == "" {
+			return remote
 		}
-		candidates = append(candidates, Candidate{
-			Remote:         remote.Name,
-			Branch:         remote.Main.Name,
-			CommitId:       rs.MainCommitId,
-			CommitMsg:      remote.Main.CommitMsg,
-			MainCommitId:   rs.MainCommitId,
-			MainRemoteName: rs.MainRemoteName,
-			MainBranchName: rs.MainBranchName,
-			Verified:       verifiedSigned || remote.Main.Signed.GetValue(),
-			SignedBy:       remote.Main.SignedBy,
-		})
-		return candidates
+		if fallback == nil {
+			fallback = remote
+		}
 	}
-	return candidates
+	return fallback
+}
+
+// verdict returns Verified and SignedBy of the head of branch, which is nil
+// when the candidate has no branch verdict of its own.
+func verdict(rs *pb.RepositoryStatus, branch *pb.Branch) (bool, string) {
+	if branch.GetSigned() != nil {
+		return branch.Signed.GetValue(), branch.SignedBy
+	}
+	return !rs.SelectedCommitShouldBeSigned.GetValue(), ""
 }
