@@ -20,9 +20,6 @@ type Fetcher struct {
 	submitRemotes      chan []string
 	RepositoryStatusCh chan *protobuf.RepositoryStatus
 	repo               repository.Repository
-	// excludedTestingHeads, when set, is asked at the start of every
-	// fetch for the testing heads the repository must not select.
-	excludedTestingHeads func() map[repository.TestingHead]bool
 }
 
 func NewFetcher(repo repository.Repository) *Fetcher {
@@ -38,22 +35,6 @@ func NewFetcher(repo repository.Repository) *Fetcher {
 
 func (f *Fetcher) IsFetching() bool {
 	return f.isFetching.Load()
-}
-
-// SetExcludedTestingHeads installs the func asked at the start of every
-// fetch for the testing heads the repository must not select. It is
-// called without any fetcher lock held.
-func (f *Fetcher) SetExcludedTestingHeads(excluded func() map[repository.TestingHead]bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.excludedTestingHeads = excluded
-}
-
-// IsAncestor reports whether the commit base is the commit top or one of
-// its ancestors in the local repository. It takes no fetcher lock, so it
-// is safe to call from the goroutine that receives RepositoryStatusCh.
-func (f *Fetcher) IsAncestor(base, top string) (bool, error) {
-	return f.repo.IsAncestor(base, top)
 }
 
 func (f *Fetcher) TriggerFetch(remotes []string) {
@@ -100,14 +81,7 @@ func (f *Fetcher) Start(ctx context.Context) {
 			}
 			if !f.isFetching.Load() && len(remotes) != 0 {
 				f.isFetching.Store(true)
-				f.mu.RLock()
-				excludedTestingHeads := f.excludedTestingHeads
-				f.mu.RUnlock()
-				var excluded map[repository.TestingHead]bool
-				if excludedTestingHeads != nil {
-					excluded = excludedTestingHeads()
-				}
-				workerRepositoryStatusCh = f.repo.FetchAndUpdate(ctx, remotes, excluded)
+				workerRepositoryStatusCh = f.repo.FetchAndUpdate(ctx, remotes)
 				remotes = []string{}
 			}
 		}

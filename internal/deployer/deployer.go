@@ -17,22 +17,9 @@ import (
 const (
 	ReasonDeploymentBuilder = "builder"
 	ReasonDeploymentManual  = "manual"
-	// ReasonDeploymentSwitchLatest tags a deployment produced by `comin
-	// deployment switch-latest`, so callers can tell it apart from an
-	// ordinary fetched-and-built deployment.
-	ReasonDeploymentSwitchLatest = "switch-latest"
 )
 
 type DeployFunc func(context.Context, string, string) (bool, string, error)
-
-// ResolveGenerationFunc resolves the generation to deploy at the moment the
-// deployer is ready to start deploying it, not when the request was made.
-type ResolveGenerationFunc func() (*protobuf.Generation, error)
-
-// AdmissionFunc reports whether a generation queued by Submit may start
-// deploying now. It is consulted right before the deployer starts it, so a
-// decision taken when the generation was submitted can be revisited.
-type AdmissionFunc func(*protobuf.Generation) bool
 
 type Deployer struct {
 	GenerationCh       chan *protobuf.Generation
@@ -47,18 +34,7 @@ type Deployer struct {
 	// The operation to use for the next deployment
 	Operation string
 	// Reason is the reason of the next deployment
-	Reason string
-	// resolveLatest is a queued switch-latest request. It is independent
-	// of GenerationToDeploy (neither displaces the other) and runs first
-	// when both are queued. It is called once the deployer is about to
-	// start deploying, so the request targets whatever is "expected" at
-	// that moment, not at submission time.
-	resolveLatest ResolveGenerationFunc
-	// starting is true between the moment the deployer takes a request
-	// off the queue and the moment its deployment is in flight (or the
-	// request is abandoned), so Idle never reports a gap between the two.
-	starting              bool
-	admit                 AdmissionFunc
+	Reason                string
 	generationAvailableCh chan struct{}
 	postDeploymentCommand string
 
@@ -178,9 +154,7 @@ func (d *Deployer) IsAlreadyDeployed(generation *protobuf.Generation) bool {
 // Submit submits a generation to be deployed. If a deployment is
 // running, this generation will be deployed once the current
 // deployment is finished. If this generation is the same than the one
-// of the last deployment, this generation is skipped. A later Submit
-// replaces a generation still waiting in the queue; a queued
-// switch-latest request (SubmitLatest) is left untouched.
+// of the last deployment, this generation is skipped.
 func (d *Deployer) Submit(generation *protobuf.Generation, operation string) {
 	logrus.Infof("deployer: submitting generation %s with operation %s", generation.Uuid, operation)
 	d.mu.Lock()
@@ -189,94 +163,10 @@ func (d *Deployer) Submit(generation *protobuf.Generation, operation string) {
 	if !d.IsAlreadyDeployed(generation) {
 		d.GenerationToDeploy = generation
 		d.Operation = operation
-		d.signalLocked()
-	}
-}
-
-// SubmitLatest queues a request whose target generation is resolved by
-// resolve at the moment the deployer is ready to start deploying it, not
-// when this call is made, and always deploys it with the "switch"
-// operation. Unlike Submit, it is never skipped by the IsAlreadyDeployed
-// check and never refused by the admission func: an explicit
-// switch-latest request always produces a new deployment. A generation
-// queued by Submit stays queued and is deployed after this request;
-// several SubmitLatest calls made before the deployer starts the request
-// produce one deployment.
-func (d *Deployer) SubmitLatest(resolve ResolveGenerationFunc) {
-	logrus.Infof("deployer: submitting a switch-latest request")
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.resolveLatest = resolve
-	d.signalLocked()
-}
-
-// SetAdmission installs the func consulted before each generation queued
-// by Submit starts deploying; a generation it refuses is dropped.
-func (d *Deployer) SetAdmission(admit AdmissionFunc) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.admit = admit
-}
-
-// Activity reports, as one snapshot, whether a deployment is in flight
-// (its post-deployment command included) and whether a deployment request
-// (concrete or a switch-latest resolver) is waiting for the deployer to
-// start it. A request moves from queued to in flight under the same lock,
-// so a caller never sees it in neither.
-func (d *Deployer) Activity() (inFlight, queued bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.isDeploying.Load(), d.hasQueuedWorkLocked()
-}
-
-func (d *Deployer) hasQueuedWorkLocked() bool {
-	return d.GenerationToDeploy != nil || d.resolveLatest != nil || d.starting
-}
-
-// Idle reports whether nothing is queued and nothing is in flight. The
-// deployment in flight includes its post-deployment command.
-func (d *Deployer) Idle() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return !d.isDeploying.Load() && !d.hasQueuedWorkLocked()
-}
-
-func (d *Deployer) signalLocked() {
-	select {
-	case d.generationAvailableCh <- struct{}{}:
-	default:
-	}
-}
-
-// takeLocked removes the next request from the queue: the switch-latest
-// request first, else the concrete generation. It returns false when the
-// queue is empty.
-func (d *Deployer) takeLocked() (g *protobuf.Generation, operation, reason string, resolve ResolveGenerationFunc, ok bool) {
-	if d.resolveLatest != nil {
-		resolve = d.resolveLatest
-		d.resolveLatest = nil
-	} else if d.GenerationToDeploy != nil {
-		g, operation, reason = d.GenerationToDeploy, d.Operation, d.Reason
-		d.GenerationToDeploy = nil
-	} else {
-		return nil, "", "", nil, false
-	}
-	d.starting = true
-	return g, operation, reason, resolve, true
-}
-
-// settle marks the current request finished or abandoned and wakes the
-// runner again when more work is queued.
-func (d *Deployer) settle(finished *protobuf.Deployment) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.starting = false
-	d.isDeploying.Store(false)
-	if finished != nil {
-		d.deployment.Store(finished)
-	}
-	if d.hasQueuedWorkLocked() {
-		d.signalLocked()
+		select {
+		case d.generationAvailableCh <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -292,44 +182,21 @@ func (d *Deployer) Run(ctx context.Context) {
 			}
 
 			d.mu.Lock()
-			g, operation, reason, resolve, ok := d.takeLocked()
-			admit := d.admit
+			g := d.GenerationToDeploy
+			operation := d.Operation
+			d.GenerationToDeploy = nil
 			d.mu.Unlock()
-			if !ok {
-				continue
-			}
-
-			if resolve != nil {
-				resolved, err := resolve()
-				if err == nil && resolved == nil {
-					err = fmt.Errorf("the resolver returned no generation")
-				}
-				if err != nil {
-					logrus.Errorf("deployer: switch-latest could not resolve a generation to deploy: %s", err)
-					d.settle(nil)
-					continue
-				}
-				g = resolved
-				operation = "switch"
-				reason = ReasonDeploymentSwitchLatest
-			} else if admit != nil && !admit(g) {
-				logrus.Infof("deployer: the generation %s is no longer admitted for deployment", g.Uuid)
-				d.settle(nil)
-				continue
-			}
 			logrus.Infof("deployer: deploying generation %s with operation %s", g.Uuid, operation)
 
-			dpl := d.store.NewDeployment(g, operation, reason)
+			dpl := d.store.NewDeployment(g, d.Operation, d.Reason)
 			d.mu.Lock()
 			d.previousDeployment.Swap(d.Deployment())
 			d.deployment.Store(dpl)
 			d.isDeploying.Store(true)
-			d.starting = false
 			d.mu.Unlock()
 			started, err := d.store.DeploymentStarted(dpl.Uuid)
 			if err != nil {
 				logrus.Errorf("deployer: could not update the deployment %s in the store", dpl.Uuid)
-				d.settle(nil)
 				continue
 			}
 			d.deployment.Store(started)
@@ -342,10 +209,8 @@ func (d *Deployer) Run(ctx context.Context) {
 			deployment, err := d.store.DeploymentFinished(dpl.Uuid, err, cominNeedRestart, profilePath)
 			if err != nil {
 				logrus.Errorf("deployer: could not update the deployment %s in the store", dpl.Uuid)
-				d.settle(nil)
 				continue
 			}
-			d.deployment.Store(deployment)
 			cmd := d.postDeploymentCommand
 			if cmd != "" {
 				_, err = runPostDeploymentCommand(cmd, deployment)
@@ -354,8 +219,9 @@ func (d *Deployer) Run(ctx context.Context) {
 				}
 			}
 
-			d.settle(deployment)
-			d.DeploymentDoneCh <- deployment
+			d.isDeploying.Store(false)
+			d.deployment.Store(deployment)
+			d.DeploymentDoneCh <- d.Deployment()
 		}
 	}()
 }

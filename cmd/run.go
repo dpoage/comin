@@ -13,8 +13,6 @@ import (
 	executorPkg "github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/fetcher"
 	"github.com/nlewo/comin/internal/http"
-	"github.com/nlewo/comin/internal/lease"
-	"github.com/nlewo/comin/internal/leasestate"
 	"github.com/nlewo/comin/internal/manager"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
@@ -107,7 +105,9 @@ var runCmd = &cobra.Command{
 		}
 
 		fetcher := fetcher.NewFetcher(repository)
+		fetcher.Start(cmd.Context())
 		sched := scheduler.New()
+		sched.FetchRemotes(fetcher, cfg.Remotes)
 
 		builder := builder.New(store, executor, gitConfig.Path, gitConfig.Dir, cfg.SystemAttr, cfg.Hostname, 30*time.Minute, 30*time.Minute)
 		deployer := deployer.New(store, executor.Deploy, lastDeployment, cfg.PostDeploymentCommand)
@@ -133,22 +133,7 @@ var runCmd = &cobra.Command{
 			configurationOperations[r.Name][r.Branches.Main.Name] = r.Branches.Main.Operation
 			configurationOperations[r.Name][r.Branches.Testing.Name] = r.Branches.Testing.Operation
 		}
-
-		leaseReader := lease.NewReader(cfg.OverrideLeaseFile)
-		leaseState, err := leasestate.Load(path.Join(cfg.StateDir, "lease-state.json"))
-		if err != nil {
-			// Load still returns an empty, usable state: no testing
-			// deployment counts as lease-aware, so none is released.
-			// (A missing file is no error: manager.New excludes the
-			// heads of the stored testing deployments instead.)
-			logrus.Error(err)
-		}
-
-		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, leaseReader, leaseState)
-		// Started once manager.New has installed the fetcher's exclusion
-		// set, so no fetch runs without it.
-		fetcher.Start(cmd.Context())
-		sched.FetchRemotes(fetcher, cfg.Remotes)
+		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations)
 
 		http.Serve(manager,
 			metrics,
