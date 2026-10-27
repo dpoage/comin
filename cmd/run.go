@@ -134,7 +134,8 @@ var runCmd = &cobra.Command{
 			configurationOperations[r.Name][r.Branches.Main.Name] = r.Branches.Main.Operation
 			configurationOperations[r.Name][r.Branches.Testing.Name] = r.Branches.Testing.Operation
 		}
-		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, preflight.Command{})
+		preflightCommand := preflight.Command{Path: cfg.PreflightCommand, Timeout: time.Duration(cfg.PreflightTimeout) * time.Second}
+		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, preflightCommand)
 
 		http.Serve(manager,
 			metrics,

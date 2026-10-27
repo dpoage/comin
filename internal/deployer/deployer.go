@@ -21,7 +21,14 @@ const (
 
 type DeployFunc func(context.Context, string, string) (bool, string, error)
 
+// PreActivation is called on the runner goroutine after a submitted
+// generation is dequeued and before its deployment is recorded. Returning
+// false skips the deployment: nothing is recorded and the deployer waits for
+// the next submission.
+type PreActivation func(ctx context.Context, generation *protobuf.Generation, operation string) bool
+
 type Deployer struct {
+	preActivation      PreActivation
 	GenerationCh       chan *protobuf.Generation
 	deployerFunc       DeployFunc
 	DeploymentDoneCh   chan *protobuf.Deployment
@@ -141,32 +148,25 @@ func (d *Deployer) Resume() {
 	}
 }
 
-func (d *Deployer) IsAlreadyDeployed(generation *protobuf.Generation) bool {
-	previous := d.previousDeployment.Load()
-	if previous == nil || generation.SelectedCommitId != previous.Generation.SelectedCommitId || generation.SelectedBranchIsTesting.GetValue() != previous.Generation.SelectedBranchIsTesting.GetValue() {
-		return false
-	} else {
-		logrus.Infof("deployer: skipping deployment of the generation %s because it is the same than the last deployment", generation.Uuid)
-		return true
-	}
+// SetPreActivation installs the check run before every deployment. It must
+// be called before Run.
+func (d *Deployer) SetPreActivation(f PreActivation) {
+	d.preActivation = f
 }
 
 // Submit submits a generation to be deployed. If a deployment is
 // running, this generation will be deployed once the current
-// deployment is finished. If this generation is the same than the one
-// of the last deployment, this generation is skipped.
+// deployment is finished, replacing a generation still waiting.
 func (d *Deployer) Submit(generation *protobuf.Generation, operation string) {
 	logrus.Infof("deployer: submitting generation %s with operation %s", generation.Uuid, operation)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if !d.IsAlreadyDeployed(generation) {
-		d.GenerationToDeploy = generation
-		d.Operation = operation
-		select {
-		case d.generationAvailableCh <- struct{}{}:
-		default:
-		}
+	d.GenerationToDeploy = generation
+	d.Operation = operation
+	select {
+	case d.generationAvailableCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -186,9 +186,13 @@ func (d *Deployer) Run(ctx context.Context) {
 			operation := d.Operation
 			d.GenerationToDeploy = nil
 			d.mu.Unlock()
+			if d.preActivation != nil && !d.preActivation(ctx, g, operation) {
+				logrus.Infof("deployer: generation %s is not deployed: the pre-activation check refused it", g.Uuid)
+				continue
+			}
 			logrus.Infof("deployer: deploying generation %s with operation %s", g.Uuid, operation)
 
-			dpl := d.store.NewDeployment(g, d.Operation, d.Reason)
+			dpl := d.store.NewDeployment(g, operation, d.Reason)
 			d.mu.Lock()
 			d.previousDeployment.Swap(d.Deployment())
 			d.deployment.Store(dpl)

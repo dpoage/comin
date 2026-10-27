@@ -15,21 +15,19 @@ import (
 )
 
 type Fetcher struct {
-	isFetching         atomic.Bool
-	repositoryStatus   *protobuf.RepositoryStatus
-	mu                 sync.RWMutex
-	submitRemotes      chan []string
-	RepositoryStatusCh chan *protobuf.RepositoryStatus
-	fetched            chan struct{}
-	repo               repository.Repository
+	isFetching       atomic.Bool
+	repositoryStatus *protobuf.RepositoryStatus
+	mu               sync.RWMutex
+	submitRemotes    chan []string
+	fetched          chan struct{}
+	repo             repository.Repository
 }
 
 func NewFetcher(repo repository.Repository) *Fetcher {
 	f := &Fetcher{
-		repo:               repo,
-		submitRemotes:      make(chan []string),
-		RepositoryStatusCh: make(chan *protobuf.RepositoryStatus),
-		fetched:            make(chan struct{}, 1),
+		repo:          repo,
+		submitRemotes: make(chan []string),
+		fetched:       make(chan struct{}, 1),
 	}
 	f.repositoryStatus = repo.GetRepositoryStatus()
 	return f
@@ -75,7 +73,7 @@ func (f *Fetcher) GetState() *protobuf.Fetcher {
 	defer f.mu.RUnlock()
 	return &protobuf.Fetcher{
 		IsFetching:       wrapperspb.Bool(f.isFetching.Load()),
-		RepositoryStatus: f.repo.GetRepositoryStatus(),
+		RepositoryStatus: proto.CloneOf(f.repositoryStatus),
 	}
 }
 
@@ -92,19 +90,11 @@ func (f *Fetcher) Start(ctx context.Context) {
 			case rs := <-workerRepositoryStatusCh:
 				f.isFetching.Store(false)
 				f.mu.Lock()
-				selectionChanged := rs.SelectedCommitId != f.repositoryStatus.SelectedCommitId || rs.SelectedBranchIsTesting.GetValue() != f.repositoryStatus.SelectedBranchIsTesting.GetValue()
 				f.repositoryStatus = rs
 				f.mu.Unlock()
-				// The level-triggered signal of this completed fetch,
-				// emitted even when the selection did not change. It is
-				// sent before the blocking emission below so that Latest
-				// and Fetched never wait on a RepositoryStatusCh reader.
 				select {
 				case f.fetched <- struct{}{}:
 				default:
-				}
-				if selectionChanged {
-					f.RepositoryStatusCh <- rs
 				}
 			}
 			if !f.isFetching.Load() && len(remotes) != 0 {
