@@ -262,6 +262,7 @@ d=%q
 exists=no
 [ -e "$COMIN_OUT_PATH" ] && exists=yes
 printf '%%s|%%s|%%s|%%s|%%s|%%s|%%s|%%s|%%s|%%s\n' "$COMIN_BRANCH" "$COMIN_OUT_PATH" "$COMIN_GIT_SHA" "$COMIN_GIT_REF" "$COMIN_GIT_MSG" "$COMIN_OPERATION" "$COMIN_CURRENT_SYSTEM" "$COMIN_TRIGGER" "$COMIN_HOSTNAME" "$exists" >> "$d/asks.log"
+printf '%%s' "$COMIN_GIT_MSG" > "$d/msg-$COMIN_GIT_SHA"
 if [ -e "$d/block" ]; then sleep 10; fi
 if [ -e "$d/slow" ]; then
   read secs from < "$d/slow"
@@ -352,7 +353,21 @@ func (r *rig) asksFor(out string) int {
 	return n
 }
 
+// gitMsg is the COMIN_GIT_MSG the preflight script last saw for commit,
+// byte for byte.
+func (r *rig) gitMsg(commit string) string {
+	r.t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.scriptDir, "msg-"+commit))
+	require.NoError(r.t, err)
+	return string(b)
+}
+
 func (r *rig) commit(branch, content string) string {
+	return r.commitMsg(branch, content, content)
+}
+
+// commitMsg commits content on branch with msg as the commit message.
+func (r *rig) commitMsg(branch, content, msg string) string {
 	r.t.Helper()
 	w, err := r.remote.Worktree()
 	require.NoError(r.t, err)
@@ -360,7 +375,7 @@ func (r *rig) commit(branch, content string) string {
 	require.NoError(r.t, os.WriteFile(filepath.Join(r.remoteDir, content), []byte(content), 0o644))
 	_, err = w.Add(content)
 	require.NoError(r.t, err)
-	hash, err := w.Commit(content, &git.CommitOptions{Author: &object.Signature{Name: "John Doe", Email: "john@doe.org", When: time.Unix(0, 0)}})
+	hash, err := w.Commit(msg, &git.CommitOptions{Author: &object.Signature{Name: "John Doe", Email: "john@doe.org", When: time.Unix(0, 0)}})
 	require.NoError(r.t, err)
 	return hash.String()
 }

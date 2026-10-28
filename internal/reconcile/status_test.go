@@ -167,12 +167,12 @@ func TestStatusManualRetriesABlockedOutPath(t *testing.T) {
 	o := obs("/out/old", cand("d", Built, admit))
 	o.Deployments = []*protobuf.Deployment{failedRow("/out/d", "switch failed", 10)}
 	o.Trigger = TriggerManual
-	assert.Equal(t, Decision{Action: SubmitDeploy, Target: 0, Desired: 0, Status: Status{
+	assert.Equal(t, Decision{Action: SubmitDeploy, Target: 0, Status: Status{
 		State: StateDeploying, Desired: target("d"),
 		Candidates: []CandidateStatus{walkEntry("d", OutcomeAdmitted, "")}}}, Decide(o))
 
 	o.Trigger = TriggerPoll
-	assert.Equal(t, Decision{Action: Wait, Target: -1, Desired: 0, Status: Status{
+	assert.Equal(t, Decision{Action: Wait, Target: -1, Status: Status{
 		State: StateFailed, Desired: target("d"), Reason: "deploy failed d: switch failed",
 		Candidates: []CandidateStatus{walkEntry("d", OutcomeAdmitted, "")}}, Decisive: true}, Decide(o))
 }

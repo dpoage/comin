@@ -151,12 +151,11 @@ const (
 	Deploy
 )
 
-// Decision is the next step. Target and Desired index Observation.Candidates;
-// Target is -1 for Wait, Desired is -1 when no candidate is admitted.
+// Decision is the next step. Target indexes Observation.Candidates;
+// Target is -1 for Wait.
 type Decision struct {
-	Action  Action
-	Target  int
-	Desired int
+	Action Action
+	Target int
 	// Status labels the pass this decision ends.
 	Status Status
 	// Decisive reports whether this decision ends a pending manual
@@ -187,7 +186,7 @@ func Decide(o Observation) Decision {
 
 func decide(o Observation) Decision {
 	if o.Suspended {
-		return waiting(-1, Status{State: StateWaiting, Reason: "suspended"})
+		return waiting(Status{State: StateWaiting, Reason: "suspended"})
 	}
 	var firstFailed, firstRefused *Candidate
 	var entries []CandidateStatus
@@ -209,19 +208,19 @@ func decide(o Observation) Decision {
 			st.Candidates = appendStopped(entries, entry(*c, OutcomePending, st.Reason), o.Candidates[i+1:])
 			switch outcome(*c, o.AsksRun) {
 			case needsEval:
-				return Decision{Action: Eval, Target: i, Desired: -1, Status: st}
+				return Decision{Action: Eval, Target: i, Status: st}
 			case needsBuildSubmit:
-				return Decision{Action: SubmitBuild, Target: i, Desired: -1, Status: st}
+				return Decision{Action: SubmitBuild, Target: i, Status: st}
 			}
-			return waiting(-1, st)
+			return waiting(st)
 		case unasked:
 			if o.InFlight {
 				// Asks wait for the deployment in flight to end.
 				st := Status{State: StateWaiting}
 				st.Candidates = appendStopped(entries, entry(*c, OutcomePending, inFlightReason(o)), o.Candidates[i+1:])
-				return waiting(-1, st)
+				return waiting(st)
 			}
-			return Decision{Action: Ask, Target: i, Desired: -1}
+			return Decision{Action: Ask, Target: i}
 		case admitted:
 			d := deploy(o, i)
 			if d.Action == Eval {
@@ -239,11 +238,11 @@ func decide(o Observation) Decision {
 	}
 	switch {
 	case firstFailed != nil:
-		return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(failedStatus(*firstFailed), entries), Decisive: true}
+		return Decision{Action: Wait, Target: -1, Status: withCandidates(failedStatus(*firstFailed), entries), Decisive: true}
 	case firstRefused != nil:
-		return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(Status{State: StateWaiting, Reason: firstRefused.Verdict.Reason}, entries), Decisive: true}
+		return Decision{Action: Wait, Target: -1, Status: withCandidates(Status{State: StateWaiting, Reason: firstRefused.Verdict.Reason}, entries), Decisive: true}
 	}
-	return Decision{Action: Wait, Target: -1, Desired: -1, Status: withCandidates(Status{State: StateWaiting, Reason: ReasonNoCandidate}, entries), Decisive: true}
+	return Decision{Action: Wait, Target: -1, Status: withCandidates(Status{State: StateWaiting, Reason: ReasonNoCandidate}, entries), Decisive: true}
 }
 
 // entry builds the walk entry of c.
@@ -269,12 +268,8 @@ func withCandidates(st Status, entries []CandidateStatus) Status {
 	return st
 }
 
-func wait(desired int) Decision {
-	return Decision{Action: Wait, Target: -1, Desired: desired}
-}
-
-func waiting(desired int, st Status) Decision {
-	return Decision{Action: Wait, Target: -1, Desired: desired, Status: st}
+func waiting(st Status) Decision {
+	return Decision{Action: Wait, Target: -1, Status: st}
 }
 
 // pendingStatus labels a walk stopped at a candidate that cannot be asked
@@ -335,25 +330,25 @@ func deploy(o Observation, i int) Decision {
 	blocked = blocked && o.Trigger != TriggerManual
 	switch {
 	case o.InFlight:
-		return wait(i)
+		return Decision{Action: Wait, Target: -1}
 	case o.Current == "":
-		return waiting(i, Status{State: StateWaiting, Desired: &t, Reason: withErr("current system unknown", o.CurrentErr)})
+		return waiting(Status{State: StateWaiting, Desired: &t, Reason: withErr("current system unknown", o.CurrentErr)})
 	case o.Current == d.OutPath:
-		return Decision{Action: Wait, Target: -1, Desired: i, Status: Status{State: StateConverged, Desired: &t}, Decisive: true}
+		return Decision{Action: Wait, Target: -1, Status: Status{State: StateConverged, Desired: &t}, Decisive: true}
 	case blocked:
-		return Decision{Action: Wait, Target: -1, Desired: i,
+		return Decision{Action: Wait, Target: -1,
 			Status:   Status{State: StateFailed, Desired: &t, Reason: withErr("deploy failed "+d.CommitId, last.ErrorMsg)},
 			Decisive: true}
 	case !d.Realized:
-		return Decision{Action: Eval, Target: i, Desired: -1, Status: pendingStatus(d)}
+		return Decision{Action: Eval, Target: i, Status: pendingStatus(d)}
 	case o.DeployConfirm.Pending == d.GenerationUuid:
-		return waiting(i, Status{State: StateWaiting, Desired: &t, Reason: "awaiting deploy confirmation " + d.CommitId})
+		return waiting(Status{State: StateWaiting, Desired: &t, Reason: "awaiting deploy confirmation " + d.CommitId})
 	}
 	st := Status{State: StateDeploying, Desired: &t}
 	if o.DeployConfirm.Confirmed == d.GenerationUuid {
-		return Decision{Action: Deploy, Target: i, Desired: i, Status: st, Decisive: true}
+		return Decision{Action: Deploy, Target: i, Status: st, Decisive: true}
 	}
-	return Decision{Action: SubmitDeploy, Target: i, Desired: i, Status: st}
+	return Decision{Action: SubmitDeploy, Target: i, Status: st}
 }
 
 type result int
