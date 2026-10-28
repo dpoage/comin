@@ -74,7 +74,8 @@ type Manager struct {
 	triggerCh chan string
 
 	// cache, cacheSeq and retryEpoch belong to the pass goroutine. A failed
-	// generation is evaluated again once retryEpoch moved past its own.
+	// generation is evaluated again once retryEpoch moved past the epoch its
+	// failure landed in.
 	cache      map[genKey]*cached
 	cacheSeq   int
 	retryEpoch uint64

@@ -56,9 +56,11 @@
   of a fresh repository, once, before its first fetch. The non-flake
   evaluation then clones the selected commit, with its history, whatever
   commit an earlier version last checked out.
-- A candidate whose evaluation or build failed is evaluated again once after
-  each completed fetch (whether or not it brought a new commit) and once by
-  each `comin deployment switch-latest`, instead of staying failed until a new
-  commit; a tick never retries it. While it is evaluated again its status is
-  `pending`. A machine-id mismatch is not retried. A build that keeps failing
-  is built again after every fetch.
+- A candidate whose evaluation or build failed is evaluated again after a
+  completed fetch (whether or not it brought a new commit) and after each
+  `comin deployment switch-latest` request, at most once per signal: signals
+  that arrive together are coalesced, and a fetch completing while the
+  attempt runs is covered by it. A tick never retries it. A re-attempt waits
+  until the builder is free, so it never cancels or repeats another
+  candidate's evaluation or build. While it is evaluated again its status is
+  `pending`. A machine-id mismatch is not retried.

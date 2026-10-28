@@ -24,9 +24,9 @@ type genKey struct {
 	testing bool
 }
 
-// cached is the generation evaluated for a genKey, requested in retryEpoch
-// epoch. The store only keeps the generations the builder still references,
-// so gen holds the last value read.
+// cached is the generation evaluated for a genKey; epoch is the retryEpoch
+// recorded when its failure landed. The store only keeps the generations
+// the builder still references, so gen holds the last value read.
 type cached struct {
 	uuid  string
 	gen   *protobuf.Generation
@@ -227,7 +227,8 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 		if v, ok := verdicts[key]; ok {
 			rc.Verdict = &v
 		}
-		if e := m.cache[key]; e != nil && m.refresh(key, e) && !e.retryDue(epoch) {
+		// A due re-attempt waits while another candidate holds the builder.
+		if e := m.cache[key]; e != nil && m.refresh(key, e) && (!e.retryDue(epoch) || m.builderHeld(key)) {
 			entries[i] = e
 			rc.Stage, rc.Err, rc.GenerationUuid, rc.OutPath = e.stage, e.err, e.uuid, e.gen.OutPath
 			rc.BuildSubmitted = buildPending == e.uuid
@@ -253,6 +254,10 @@ func (m *Manager) refresh(key genKey, e *cached) bool {
 	stage, errMsg := m.stageOf(e.gen)
 	if stage == reconcile.MachineIdMismatch && e.stage != stage {
 		logrus.Infof("manager: the comin.machineId %s is not the host machine-id %s", e.gen.MachineId, m.machineId)
+	}
+	if (stage == reconcile.EvalFailed || stage == reconcile.BuildFailed) && e.stage != stage {
+		// The attempt covers every fetch completing before its failure lands.
+		e.epoch = m.retryEpoch
 	}
 	e.stage, e.err = stage, errMsg
 	return true
@@ -280,10 +285,21 @@ func (m *Manager) stageOf(g *protobuf.Generation) (reconcile.Stage, string) {
 	return reconcile.AwaitingBuild, ""
 }
 
-// retryDue reports whether e is a failed evaluation or build that the epoch
-// has moved past; the pass then sees the candidate as never evaluated.
+// retryDue reports whether e failed in an epoch that epoch has moved past;
+// the pass then sees the candidate as never evaluated.
 func (e *cached) retryDue(epoch uint64) bool {
 	return (e.stage == reconcile.EvalFailed || e.stage == reconcile.BuildFailed) && e.epoch < epoch
+}
+
+// builderHeld reports whether a candidate other than key still holds the
+// single-slot builder: evaluating, building, or awaiting its build.
+func (m *Manager) builderHeld(key genKey) bool {
+	for k, e := range m.cache {
+		if k != key && !finished(e.stage) {
+			return true
+		}
+	}
+	return false
 }
 
 func finished(s reconcile.Stage) bool {
@@ -326,7 +342,8 @@ func (m *Manager) apply(ctx context.Context, obs reconcile.Observation, entries 
 }
 
 // eval requests the evaluation of c. The builder holds one generation, so
-// the entries it is about to preempt are forgotten.
+// the entries it is about to preempt are forgotten; a re-attempt runs only
+// once that set is empty, so it preempts nothing.
 func (m *Manager) eval(ctx context.Context, c repository.Candidate) {
 	for k, e := range m.cache {
 		if !finished(e.stage) {
@@ -339,7 +356,7 @@ func (m *Manager) eval(ctx context.Context, c repository.Candidate) {
 		return
 	}
 	m.cacheSeq++
-	m.cache[genKey{c.CommitId, c.Testing}] = &cached{uuid: m.Builder.State().GenerationUuid, seq: m.cacheSeq, epoch: m.retryEpoch}
+	m.cache[genKey{c.CommitId, c.Testing}] = &cached{uuid: m.Builder.State().GenerationUuid, seq: m.cacheSeq}
 	for len(m.cache) > maxCached {
 		var oldest genKey
 		first := true

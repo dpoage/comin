@@ -203,7 +203,9 @@ type rigOpts struct {
 	// manual and autoDelay select the deploy confirmer mode; the default confirms at once.
 	manual    bool
 	autoDelay time.Duration
-	tick      time.Duration
+	// manualBuild makes the build confirmer wait for Confirm.
+	manualBuild bool
+	tick        time.Duration
 }
 
 type rig struct {
@@ -423,7 +425,11 @@ func (r *rig) start() {
 	f.Start(ctx)
 	b := builder.New(st, r.exec, gitConfig.Path, "", "", "my-machine", time.Minute, time.Minute)
 	d := deployer.New(st, r.exec.Deploy, last, "")
-	bc := NewConfirmer(bk, Without, 0, "build")
+	bcMode := Without
+	if r.opts.manualBuild {
+		bcMode = Manual
+	}
+	bc := NewConfirmer(bk, bcMode, 0, "build")
 	bc.Start()
 	mode := Without
 	if r.opts.manual {
