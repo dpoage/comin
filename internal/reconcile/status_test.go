@@ -77,11 +77,6 @@ func TestStatusRows(t *testing.T) {
 			o.DeployConfirm.Pending = "uuid-d"
 			return o
 		}(), Status{State: StateWaiting, Desired: target("d"), Reason: "awaiting deploy confirmation d", Candidates: admittedD}},
-		{"the pre-activation ask refused", func() Observation {
-			o := obs("/out/old", d)
-			o.LastActivation = &Activation{OutPath: "/out/d", Verdict: *refuse}
-			return o
-		}(), Status{State: StateWaiting, Desired: target("d"), Reason: "refused: gate", Candidates: admittedD}},
 		{"otherwise deploying", obs("/out/old", d),
 			Status{State: StateDeploying, Desired: target("d"), Candidates: admittedD}},
 		{"walk exhausted on an eval failure", func() Observation {

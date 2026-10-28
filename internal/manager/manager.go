@@ -72,6 +72,9 @@ type Manager struct {
 	// wakeCh requests a pass; triggerCh requests one with the given trigger.
 	wakeCh    chan struct{}
 	triggerCh chan string
+	// beforeTriggerRead, nil outside tests, runs on the pass goroutine
+	// between the start stamp of a pass and its read of triggerCh.
+	beforeTriggerRead func()
 
 	// cache and cacheSeq belong to the pass goroutine.
 	cache    map[genKey]*cached
@@ -83,7 +86,6 @@ type Manager struct {
 	deployPending     string
 	deployConfirmed   string
 	inFlight          *submission
-	lastActivation    *reconcile.Activation
 	reconcileSnapshot statusSnapshot
 }
 

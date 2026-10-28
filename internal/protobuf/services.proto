@@ -189,8 +189,10 @@ message Reconcile {
   // while suspended or when there is no candidate
   repeated ReconcileCandidate candidates = 6;
   // observed_at is when the pass that produced this status started, on
-  // the host clock: every input of that pass was read after it. Null
-  // before the first pass.
+  // the host clock; that pass read every input after it. A waiter notes
+  // the host time T once its change has taken effect (the preflight's
+  // input written, switch-latest returned) and waits for observed_at > T.
+  // Null before the first pass.
   google.protobuf.Timestamp observed_at = 7;
 }
 

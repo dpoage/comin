@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -78,4 +79,74 @@ func TestObservedAtFollowsTheAction(t *testing.T) {
 		assertDesired(t, v, map[string]any{"commit": testing, "branch": "testing", "out_path": r.out(testing)})
 		r.waitCurrent(r.out(testing))
 	})
+}
+
+// A refusal of a pre-activation ask made before T labels no status
+// observed after T. The 1 h tick leaves only event passes.
+func TestObservedAtIgnoresAnEarlierActivationVerdict(t *testing.T) {
+	r := newRig(t, rigOpts{preflight: true, manual: true, tick: time.Hour})
+	testing := r.pushTesting("file-t1")
+	r.verdict("main", "refuse")
+	r.start()
+	uuid := r.waitPending("")
+
+	// The walk ask admits; the pre-activation ask that follows refuses.
+	r.lateAsks(time.Second)
+	held := r.lateReads()
+	r.m.DeployConfirmer.Confirm(uuid)
+	require.Eventually(t, func() bool { return r.lateReads() > held }, 15*time.Second, 5*time.Millisecond, "no walk ask")
+	r.verdict("testing", "refuse")
+	r.lateAsks(0)
+	require.Eventually(t, func() bool {
+		cs := r.m.GetState().GetReconcile().GetCandidates()
+		return len(cs) == 2 && cs[0].GetOutcome() == "refused" && cs[1].GetOutcome() == "refused"
+	}, 15*time.Second, 25*time.Millisecond, "the walk never refused both candidates")
+	require.Empty(t, r.exec.deployLog())
+	require.Positive(t, r.asksFor(r.out(testing)))
+
+	r.verdict("testing", "admit")
+	at := time.Now()
+	r.m.wake()
+	v := firstAfter(t, r, at)
+	assert.Equal(t, "deploying", reconcileField(t, v, "state"))
+	assert.Equal(t, "", reconcileField(t, v, "reason"), "a verdict from before the change labels the status")
+	assert.Equal(t, []string{"admitted", "skipped"}, outcomes(t, v))
+}
+
+// A request that lands between a pass's start stamp and its trigger read
+// is served by that pass or by a pass stamped after it.
+func TestObservedAtCoversARequestBeforeTheTriggerRead(t *testing.T) {
+	var armed atomic.Bool
+	requested := make(chan time.Time, 1)
+	var r *rig
+	r = newRig(t, rigOpts{preflight: true, beforeTriggerRead: func() {
+		if armed.CompareAndSwap(true, false) {
+			if err := r.m.SwitchDeploymentLatest(); err != nil {
+				panic(err)
+			}
+			requested <- time.Now()
+		}
+	}})
+	testing := r.pushTesting("file-t1")
+	r.verdict("testing", "manual")
+	r.verdict("main", "refuse")
+	r.start()
+	require.Eventually(t, func() bool {
+		cs := r.m.GetState().GetReconcile().GetCandidates()
+		return len(cs) == 2 && cs[0].GetOutcome() == "refused" && cs[1].GetOutcome() == "refused"
+	}, 15*time.Second, 25*time.Millisecond, "the poll passes never refused both candidates")
+
+	// Held asks keep each pass's status readable until the next pass records.
+	r.lateAsks(300 * time.Millisecond)
+	armed.Store(true)
+	var at time.Time
+	select {
+	case at = <-requested:
+	case <-time.After(15 * time.Second):
+		t.Fatal("no pass read the trigger")
+	}
+	v := firstAfter(t, r, at)
+	assertDesired(t, v, map[string]any{"commit": testing, "branch": "testing", "out_path": r.out(testing)})
+	r.lateAsks(0)
+	r.waitCurrent(r.out(testing))
 }

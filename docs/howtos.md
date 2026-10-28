@@ -119,9 +119,11 @@ candidate, and it returns without waiting for that pass.
 
 `comin status` reports the outcome of the last reconcile pass in its
 `reconcile` object. Its `observed_at` is when that pass started, on the
-host clock: to see the outcome of a change (a verdict of the preflight
-command, `comin deployment switch-latest`), note the host time before
-making it and wait for a status whose `observed_at` is later.
+host clock, and that pass read all its inputs after that time. To see the
+outcome of a change, note the host time once the change has taken effect
+(the input of the preflight command written, `comin deployment
+switch-latest` returned), then wait for a status whose `observed_at` is
+later.
 
 **Fork behaviour**: when `services.comin.preflightCommand` is `null`,
 comin reverts a change made outside of comin (`nixos-rebuild`, a

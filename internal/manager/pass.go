@@ -78,20 +78,27 @@ func (m *Manager) abandoned(g *protobuf.Generation) {
 }
 
 // reconcileLoop runs a pass at start, then on every wake, trigger and tick.
-// A manual request outlives the pass that reads it: passes carry the
-// manual trigger until one reaches a decision, so a request made while a
-// deployment is in flight or the walk is pending is served by the first
-// decisive pass.
+// Passes carry the manual trigger until one is decisive.
 func (m *Manager) reconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(m.tick)
 	defer ticker.Stop()
 	manual := false
 	for {
+		// A request that reached comin before the stamp is served by this pass.
+		started := time.Now()
+		if m.beforeTriggerRead != nil {
+			m.beforeTriggerRead()
+		}
+		select {
+		case <-m.triggerCh:
+			manual = true
+		default:
+		}
 		trigger := reconcile.TriggerPoll
 		if manual {
 			trigger = reconcile.TriggerManual
 		}
-		d := m.pass(ctx, trigger)
+		d := m.pass(ctx, started, trigger)
 		manual = manual && !d.Decisive
 		select {
 		case <-ctx.Done():
@@ -100,13 +107,6 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 		case <-m.wakeCh:
 		case <-m.triggerCh:
 			manual = true
-		}
-		// A request racing a wake or a tick must reach the next pass, not
-		// the one after it.
-		select {
-		case <-m.triggerCh:
-			manual = true
-		default:
 		}
 	}
 }
@@ -146,9 +146,8 @@ func (m *Manager) watch(ctx context.Context) {
 // pass decides and applies steps until one needs an external event. The
 // verdicts of its asks live for the pass only. A step holds passMu from
 // observe through apply; asks run without it.
-func (m *Manager) pass(ctx context.Context, trigger string) reconcile.Decision {
-	// Every input of the pass is read after its start.
-	started := time.Now()
+// started precedes every read of the pass's inputs.
+func (m *Manager) pass(ctx context.Context, started time.Time, trigger string) reconcile.Decision {
 	verdicts := map[genKey]preflight.Verdict{}
 	for ctx.Err() == nil {
 		m.passMu.Lock()
@@ -199,7 +198,6 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 		InFlight:       m.inFlight != nil,
 		InFlightTarget: inFlightTarget,
 		DeployConfirm:  reconcile.DeployConfirm{Pending: m.deployPending, Confirmed: m.deployConfirmed},
-		LastActivation: m.lastActivation,
 	}
 	buildPending := m.buildPending
 	m.mu.Unlock()
@@ -357,9 +355,6 @@ func (m *Manager) preActivation(ctx context.Context, g *protobuf.Generation, ope
 	}
 	current, _ := m.currentSystem()
 	v := preflight.Ask(ctx, m.preflight, askEnv(g, operation, current, trigger))
-	m.mu.Lock()
-	m.lastActivation = &reconcile.Activation{OutPath: g.OutPath, Verdict: v}
-	m.mu.Unlock()
 	if !v.Admitted {
 		logrus.Infof("manager: the activation of %s is refused: %s", g.OutPath, v.Reason)
 		m.endSubmission()

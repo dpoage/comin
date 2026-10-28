@@ -68,12 +68,6 @@ type DeployConfirm struct {
 	Confirmed string
 }
 
-// Activation is the answer of the last ask made right before an activation.
-type Activation struct {
-	OutPath string
-	Verdict preflight.Verdict
-}
-
 // Target is the candidate a Status row names: Commit, its real Branch name
 // and OutPath, empty when it has none.
 type Target struct {
@@ -134,10 +128,9 @@ type Observation struct {
 	// failure older than it is retried once.
 	ProcessStartedAt time.Time
 	// AsksRun: a preflight command is configured, so an ask reads the store path.
-	AsksRun        bool
-	DeployConfirm  DeployConfirm
-	Trigger        string
-	LastActivation *Activation
+	AsksRun       bool
+	DeployConfirm DeployConfirm
+	Trigger       string
 }
 
 type Action int
@@ -356,9 +349,6 @@ func deploy(o Observation, i int) Decision {
 		return waiting(i, Status{State: StateWaiting, Desired: &t, Reason: "awaiting deploy confirmation " + d.CommitId})
 	}
 	st := Status{State: StateDeploying, Desired: &t}
-	if a := o.LastActivation; a != nil && a.OutPath == d.OutPath && !a.Verdict.Admitted {
-		st = Status{State: StateWaiting, Desired: &t, Reason: a.Verdict.Reason}
-	}
 	if o.DeployConfirm.Confirmed == d.GenerationUuid {
 		return Decision{Action: Deploy, Target: i, Desired: i, Status: st, Decisive: true}
 	}

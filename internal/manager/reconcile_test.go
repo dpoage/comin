@@ -234,10 +234,18 @@ func TestActivationGate(t *testing.T) {
 		r.start()
 		require.Eventually(t, func() bool { return r.asksFor(r.out(r.mainHead())) > 0 }, 15*time.Second, 25*time.Millisecond)
 		r.m.deployer.Submit(&protobuf.Generation{Uuid: "g", OutPath: r.out(r.mainHead())}, "switch")
-		require.Eventually(t, func() bool { return r.m.lastActivationVerdict() != "" }, 15*time.Second, 25*time.Millisecond)
-		assert.Equal(t, "refused: main", r.m.lastActivationVerdict())
-		assert.Empty(t, r.exec.deployLog())
-		assert.Empty(t, r.m.storage.DeploymentList())
+		// The ask of the hand-built generation carries no commit.
+		require.Eventually(t, func() bool {
+			for _, a := range r.asks() {
+				if a.out == r.out(r.mainHead()) && a.sha == "" {
+					return true
+				}
+			}
+			return false
+		}, 15*time.Second, 25*time.Millisecond, "no activation ask: %v", r.asks())
+		assert.Never(t, func() bool {
+			return len(r.exec.deployLog()) > 0 || len(r.m.storage.DeploymentList()) > 0
+		}, time.Second, 25*time.Millisecond, "the refused activation was recorded")
 	})
 
 	t.Run("without a preflight command every candidate is admitted", func(t *testing.T) {
@@ -264,15 +272,6 @@ func TestActivationGate(t *testing.T) {
 			return false
 		}, 15*time.Second, 25*time.Millisecond)
 	})
-}
-
-func (m *Manager) lastActivationVerdict() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.lastActivation == nil {
-		return ""
-	}
-	return m.lastActivation.Verdict.Reason
 }
 
 func TestFailedDeployment(t *testing.T) {
