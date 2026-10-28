@@ -57,10 +57,14 @@
   evaluation then clones the selected commit, with its history, whatever
   commit an earlier version last checked out.
 - A candidate whose evaluation or build failed is evaluated again after a
-  completed fetch (whether or not it brought a new commit) and after each
+  completed fetch (whether or not it brought a new commit) and after a
   `comin deployment switch-latest` request, at most once per signal: signals
   that arrive together are coalesced, and a fetch completing while the
   attempt runs is covered by it. A tick never retries it. A re-attempt waits
-  until the builder is free, so it never cancels or repeats another
-  candidate's evaluation or build. While it is evaluated again its status is
-  `pending`. A machine-id mismatch is not retried.
+  while the builder reports an evaluation or build running, or while a
+  candidate still offered is evaluating, building, or awaiting its build or
+  its build confirmation (under a manual build confirmer, an unconfirmed
+  build holds it until confirmed), so it never cancels or repeats another
+  candidate's evaluation or build; a candidate no longer offered never holds
+  it. While it is evaluated again
+  its status is `pending`. A machine-id mismatch is not retried.

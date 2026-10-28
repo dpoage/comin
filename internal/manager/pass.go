@@ -220,6 +220,18 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 
 	epoch := m.retryEpoch
 	candidates := repository.Candidates(m.Fetcher.Latest())
+	offered := make(map[genKey]bool, len(candidates))
+	for _, c := range candidates {
+		offered[genKey{c.CommitId, c.Testing}] = true
+	}
+	for k, e := range m.cache {
+		// A candidate no longer offered never holds the builder.
+		if !offered[k] && !finished(e.stage) {
+			delete(m.cache, k)
+		}
+	}
+	// A due re-attempt waits while the builder is held.
+	held := m.builderHeld(offered, buildPending)
 	entries := make([]*cached, len(candidates))
 	for i, c := range candidates {
 		key := genKey{c.CommitId, c.Testing}
@@ -227,8 +239,7 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 		if v, ok := verdicts[key]; ok {
 			rc.Verdict = &v
 		}
-		// A due re-attempt waits while another candidate holds the builder.
-		if e := m.cache[key]; e != nil && m.refresh(key, e) && (!e.retryDue(epoch) || m.builderHeld(key)) {
+		if e := m.cache[key]; e != nil && m.refresh(key, e) && (!e.retryDue(epoch) || held) {
 			entries[i] = e
 			rc.Stage, rc.Err, rc.GenerationUuid, rc.OutPath = e.stage, e.err, e.uuid, e.gen.OutPath
 			rc.BuildSubmitted = buildPending == e.uuid
@@ -291,15 +302,22 @@ func (e *cached) retryDue(epoch uint64) bool {
 	return (e.stage == reconcile.EvalFailed || e.stage == reconcile.BuildFailed) && e.epoch < epoch
 }
 
-// builderHeld reports whether a candidate other than key still holds the
-// single-slot builder: evaluating, building, or awaiting its build.
-func (m *Manager) builderHeld(key genKey) bool {
+// builderHeld reports whether the builder reports work running, or an
+// offered candidate still holds it (unfinished entry, pending confirmation).
+func (m *Manager) builderHeld(offered map[genKey]bool, buildPending string) bool {
+	if m.Builder.IsEvaluating() || m.Builder.IsBuilding() {
+		return true
+	}
 	for k, e := range m.cache {
-		if k != key && !finished(e.stage) {
+		if offered[k] && !finished(e.stage) {
 			return true
 		}
 	}
-	return false
+	if buildPending == "" {
+		return false
+	}
+	g, err := m.storage.GenerationGet(buildPending)
+	return err == nil && offered[genKey{g.SelectedCommitId, g.SelectedBranchIsTesting.GetValue()}]
 }
 
 func finished(s reconcile.Stage) bool {

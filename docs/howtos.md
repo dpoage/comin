@@ -118,15 +118,20 @@ retries such a candidate once. It fails when the repository offers no
 candidate, and it returns without waiting for that pass.
 
 A candidate whose evaluation or build failed is evaluated again after a
-completed fetch, whether or not the fetch brought a new commit, and by each
-`comin deployment switch-latest`; a tick never retries it. A fetch that
-completes while the attempt runs is covered by it, and signals that arrive
-together are coalesced: the re-attempt happens at most once per signal, and
-only for a fetch completing after the failure. Until then its status is
-`failed` and comin considers the candidates below it; while it is evaluated
-again its status is `pending` and the candidates below it wait. A re-attempt
-waits for the builder to be free, so it never cancels or repeats another
-candidate's evaluation or build. A machine-id mismatch is not retried.
+completed fetch, whether or not the fetch brought a new commit, and after a
+`comin deployment switch-latest` request; a tick never retries it. A fetch
+that completes while the attempt runs is covered by it, and signals that
+arrive together are coalesced: the re-attempt happens at most once per
+signal, and only for a signal completing after the failure. Until then its
+status is `failed` and comin considers the candidates below it; while it is
+evaluated again its status is `pending` and the candidates below it wait. A
+re-attempt waits while the builder reports an evaluation or build running,
+or while a candidate still offered is evaluating, building, or awaiting its
+build or its build confirmation — under a manual build confirmer, an
+unconfirmed build of a current lower candidate holds the re-attempt until
+confirmed — so it never cancels or repeats another candidate's evaluation
+or build; a candidate no longer offered never holds it. A machine-id
+mismatch is not retried.
 
 `comin status` reports the last reconcile pass in its `reconcile`
 object. Its `observed_at` is when that pass started, on the host clock,

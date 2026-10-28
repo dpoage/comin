@@ -110,6 +110,10 @@ func (b *Builder) IsEvaluating() bool {
 	return b.isEvaluating.Load()
 }
 
+func (b *Builder) IsBuilding() bool {
+	return b.isBuilding.Load()
+}
+
 func (b *Builder) stopEval() {
 	b.evaluator.Stop()
 	b.evaluatorWg.Wait()
