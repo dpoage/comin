@@ -55,24 +55,55 @@ type fakeExec struct {
 	builds     int
 	// deployDelay holds each deployment in flight once submitted.
 	deployDelay time.Duration
+	// evalErr and buildErr fail the attempt-th (1-based) evaluation of a commit
+	// and build of a derivation when they return an error; evalHold delays each evaluation.
+	evalErr   func(commit string, attempt int) error
+	buildErr  func(drv string, attempt int) error
+	evalHold  time.Duration
+	buildTrys map[string]int
 }
 
 func (e *fakeExec) Eval(_ context.Context, _, _, commitId, _, _ string) (string, string, string, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.evals = append(e.evals, commitId)
+	attempt := 0
+	for _, c := range e.evals {
+		if c == commitId {
+			attempt++
+		}
+	}
+	failure, hold := e.evalErr, e.evalHold
+	e.mu.Unlock()
+	if hold > 0 {
+		time.Sleep(hold)
+	}
+	if failure != nil {
+		if err := failure(commitId, attempt); err != nil {
+			return "", "", "", err
+		}
+	}
 	return filepath.Join(e.storeDir, commitId+".drv"), filepath.Join(e.storeDir, commitId), "", nil
 }
 
 func (e *fakeExec) Build(ctx context.Context, drvPath string) error {
 	e.mu.Lock()
 	e.builds++
+	if e.buildTrys == nil {
+		e.buildTrys = map[string]int{}
+	}
+	e.buildTrys[drvPath]++
+	attempt, failure := e.buildTrys[drvPath], e.buildErr
 	delay := e.buildDelay
 	e.mu.Unlock()
 	select {
 	case <-time.After(delay):
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	if failure != nil {
+		if err := failure(drvPath, attempt); err != nil {
+			return err
+		}
 	}
 	return os.MkdirAll(strings.TrimSuffix(drvPath, ".drv"), 0o755)
 }
@@ -172,7 +203,9 @@ type rigOpts struct {
 	// manual and autoDelay select the deploy confirmer mode; the default confirms at once.
 	manual    bool
 	autoDelay time.Duration
-	tick      time.Duration
+	// manualBuild makes the build confirmer wait for Confirm.
+	manualBuild bool
+	tick        time.Duration
 }
 
 type rig struct {
@@ -392,7 +425,11 @@ func (r *rig) start() {
 	f.Start(ctx)
 	b := builder.New(st, r.exec, gitConfig.Path, "", "", "my-machine", time.Minute, time.Minute)
 	d := deployer.New(st, r.exec.Deploy, last, "")
-	bc := NewConfirmer(bk, Without, 0, "build")
+	bcMode := Without
+	if r.opts.manualBuild {
+		bcMode = Manual
+	}
+	bc := NewConfirmer(bk, bcMode, 0, "build")
 	bc.Start()
 	mode := Without
 	if r.opts.manual {

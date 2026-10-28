@@ -34,6 +34,7 @@ const ReasonNoCandidate = "no candidate"
 type Stage int
 
 const (
+	// NoGeneration: none evaluated, or a failed one whose retry is due.
 	NoGeneration Stage = iota
 	Evaluating
 	// AwaitingBuild: evaluated, build not started.
@@ -138,7 +139,7 @@ type Action int
 const (
 	// Wait: nothing to do this pass.
 	Wait Action = iota
-	// Eval: evaluate Target again (never evaluated, or its out path vanished).
+	// Eval: evaluate Target (never evaluated, a failure due its retry, or its out path vanished).
 	Eval
 	// SubmitBuild: submit Target's generation to the build confirmer.
 	SubmitBuild
@@ -277,7 +278,7 @@ func waiting(desired int, st Status) Decision {
 }
 
 // pendingStatus labels a walk stopped at a candidate that cannot be asked
-// yet, or that is evaluated again after its out path vanished.
+// yet, or that is evaluated again after a retry is due or its out path vanished.
 func pendingStatus(c Candidate) Status {
 	return Status{State: StateWaiting, Reason: pendingReason(c)}
 }
