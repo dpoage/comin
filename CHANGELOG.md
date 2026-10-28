@@ -33,6 +33,8 @@
   never writes the repository's working tree or `.git/HEAD`, so a concurrent
   `nix eval git+file://…?rev=…` cannot read a half-written HEAD. The signature
   verdict `selected_commit_signed*` is the verdict of the selected commit, as
-  before. The non-flake evaluation copies the selected commit out of the
-  repository instead of cloning it, so it no longer fails when the repository's
-  HEAD is detached at a commit no branch names, as an older comin could leave it.
+  before. When comin starts on a repository whose `.git/HEAD` an earlier
+  version left detached at a commit, it points HEAD back to the unborn branch
+  of a fresh repository, once, before its first fetch. The non-flake
+  evaluation then clones the selected commit, with its history, whatever
+  commit an earlier version last checked out.

@@ -159,10 +159,28 @@ func repositoryOpen(config types.GitConfig) (r *git.Repository, err error) {
 			return
 		}
 		logrus.Debugf("The local Git repository located at '%s' has been opened", config.Path)
+		err = unbornHead(r)
 	} else {
 		logrus.Infof("The local Git repository located at '%s' has been initialized", config.Path)
 	}
 	return
+}
+
+// unbornHead points a detached HEAD, left by an older comin's checkout, back to
+// a fresh repository's unborn branch: go-git cannot clone a HEAD no ref names.
+func unbornHead(r *git.Repository) error {
+	head, err := r.Storer.Reference(plumbing.HEAD)
+	if err != nil {
+		return fmt.Errorf("failed to read HEAD: %w", err)
+	}
+	if head.Type() != plumbing.HashReference {
+		return nil
+	}
+	logrus.Infof("repository: HEAD is detached at %s, pointing it to %s", head.Hash(), plumbing.Master)
+	if err := r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.Master)); err != nil {
+		return fmt.Errorf("failed to point HEAD to %s: %w", plumbing.Master, err)
+	}
+	return nil
 }
 
 func manageRemotes(r *git.Repository, remotes []types.Remote) error {
