@@ -224,14 +224,8 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 	for _, c := range candidates {
 		offered[genKey{c.CommitId, c.Testing}] = true
 	}
-	for k, e := range m.cache {
-		// A candidate no longer offered never holds the builder.
-		if !offered[k] && !finished(e.stage) {
-			delete(m.cache, k)
-		}
-	}
 	// A due re-attempt waits while the builder is held.
-	held := m.builderHeld(offered, buildPending)
+	held := m.builderHeld(offered)
 	entries := make([]*cached, len(candidates))
 	for i, c := range candidates {
 		key := genKey{c.CommitId, c.Testing}
@@ -303,8 +297,8 @@ func (e *cached) retryDue(epoch uint64) bool {
 }
 
 // builderHeld reports whether the builder reports work running, or an
-// offered candidate still holds it (unfinished entry, pending confirmation).
-func (m *Manager) builderHeld(offered map[genKey]bool, buildPending string) bool {
+// offered candidate still holds it (an unfinished entry).
+func (m *Manager) builderHeld(offered map[genKey]bool) bool {
 	if m.Builder.IsEvaluating() || m.Builder.IsBuilding() {
 		return true
 	}
@@ -313,11 +307,7 @@ func (m *Manager) builderHeld(offered map[genKey]bool, buildPending string) bool
 			return true
 		}
 	}
-	if buildPending == "" {
-		return false
-	}
-	g, err := m.storage.GenerationGet(buildPending)
-	return err == nil && offered[genKey{g.SelectedCommitId, g.SelectedBranchIsTesting.GetValue()}]
+	return false
 }
 
 func finished(s reconcile.Stage) bool {
