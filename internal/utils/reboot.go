@@ -21,7 +21,8 @@ import (
 // accept this tradeoff since this is a corner case.
 func NeedToRebootLinux(outPath, operation string) (reboot bool) {
 	if operation == "boot" {
-		currentSystem, err := os.Readlink("/run/current-system")
+		// Config load rejects boot; this serves a boot deployment recorded in store.json before that.
+		currentSystem, err := os.Readlink(currentSystemPath)
 		if err != nil {
 			logrus.Infof("nix: could not know if a reboot is required since it failed to read the symlink /run/current-system: %s", err)
 			return

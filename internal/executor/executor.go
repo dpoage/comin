@@ -3,8 +3,13 @@ package executor
 import (
 	"context"
 
+	"github.com/nlewo/comin/internal/utils"
 	"github.com/sirupsen/logrus"
 )
+
+// currentSystem reads the store path the host is running; a variable so a test
+// can point the executors at a scratch symlink.
+var currentSystem = utils.CurrentSystem
 
 type EvalFunc func(ctx context.Context, repositoryPath, repositorySubdir, commitId, systemAttr, hostname string) (drvPath string, outPath string, machineId string, err error)
 type BuildFunc func(ctx context.Context, drvPath string) error
@@ -23,6 +28,9 @@ type Executor interface {
 	// IsStorePathExist returns true if a storepath exists. This
 	// is used to detect if a build will be required or not.
 	IsStorePathExist(string) bool
+	// CurrentSystem returns the store path the host is currently
+	// running, or "" when that is unknown (e.g. nothing deployed yet).
+	CurrentSystem() (string, error)
 }
 
 func NewNixOSFlake() (e Executor, err error) {

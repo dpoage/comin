@@ -291,50 +291,35 @@ func deploy(ctx context.Context, outPath, operation, systemAttr string) (needToR
 }
 
 func deployLinux(ctx context.Context, outPath, operation string) (needToRestartComin bool, profilePath string, err error) {
-	// FIXME: this check doesn't have to be here. It should be
-	// done by the manager.
-	beforeCominUnitFileHash := cominUnitFileHashLinux()
-
-	// This is required to write boot entries
-	// Only do this is operation is switch or boot
-	if profilePath, err = profile.SetSystemProfile(operation, outPath, false); err != nil {
-		return
-	}
-
-	if err = switchToConfigurationLinux(operation, outPath, false); err != nil {
-		return
-	}
-
-	afterCominUnitFileHash := cominUnitFileHashLinux()
-
-	if beforeCominUnitFileHash != afterCominUnitFileHash {
-		needToRestartComin = true
-	}
-
-	logrus.Infof("nix: deployment ended")
-
-	return
+	return deployWith(outPath, operation, cominUnitFileHashLinux, switchToConfigurationLinux)
 }
 
 func deployDarwin(ctx context.Context, outPath, operation string) (needToRestartComin bool, profilePath string, err error) {
+	return deployWith(outPath, operation, cominUnitFileHashDarwin, switchToConfigurationDarwin)
+}
+
+// deployWith re-hashes the comin unit after the switch even when it failed: a partially
+// applied switch can still have installed a new comin unit.
+func deployWith(
+	outPath, operation string,
+	unitHash func() string,
+	switchTo func(operation, outPath string, dryRun bool) error,
+) (needToRestartComin bool, profilePath string, err error) {
 	// FIXME: this check doesn't have to be here. It should be
 	// done by the manager.
-	beforeCominUnitFileHash := cominUnitFileHashDarwin()
+	beforeCominUnitFileHash := unitHash()
 
 	// This is required to write boot entries
-	// Only do this is operation is switch or boot
+	// Only do this if the operation is switch
 	if profilePath, err = profile.SetSystemProfile(operation, outPath, false); err != nil {
 		return
 	}
 
-	if err = switchToConfigurationDarwin(operation, outPath, false); err != nil {
+	err = switchTo(operation, outPath, false)
+
+	needToRestartComin = beforeCominUnitFileHash != unitHash()
+	if err != nil {
 		return
-	}
-
-	afterCominUnitFileHash := cominUnitFileHashDarwin()
-
-	if beforeCominUnitFileHash != afterCominUnitFileHash {
-		needToRestartComin = true
 	}
 
 	logrus.Infof("nix: deployment ended")

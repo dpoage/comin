@@ -9,8 +9,8 @@ import (
 	"github.com/nlewo/comin/internal/broker"
 	"github.com/nlewo/comin/internal/builder"
 	"github.com/nlewo/comin/internal/deployer"
-	"github.com/nlewo/comin/internal/executor"
 	"github.com/nlewo/comin/internal/fetcher"
+	"github.com/nlewo/comin/internal/preflight"
 	"github.com/nlewo/comin/internal/prometheus"
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/scheduler"
@@ -21,6 +21,18 @@ import (
 )
 
 var emptyConfigurationOperations = map[string]map[string]string{}
+
+// rsAtMain is a repository status selecting commitId, also the head of main,
+// so repository.Candidates yields it as the main candidate.
+func rsAtMain(commitId string) *protobuf.RepositoryStatus {
+	return &protobuf.RepositoryStatus{
+		SelectedCommitId: commitId,
+		MainCommitId:     commitId,
+		Remotes: []*protobuf.Remote{
+			{Name: "remote", Main: &protobuf.Branch{Name: "main", CommitId: commitId}},
+		},
+	}
+}
 
 var mkDeployerMock = func(t *testing.T) *deployer.Deployer {
 	var deployFunc = func(context.Context, string, string) (bool, string, error) {
@@ -49,6 +61,9 @@ func (n ExecutorMock) NeedToReboot(_, _ string) bool {
 }
 func (n ExecutorMock) IsStorePathExist(storePath string) bool {
 	return false
+}
+func (n ExecutorMock) CurrentSystem() (string, error) {
+	return "", nil
 }
 func (n ExecutorMock) Deploy(ctx context.Context, outPath, operation string) (needToRestartComin bool, profilePath string, err error) {
 	return false, "", nil
@@ -95,12 +110,12 @@ func TestBuild(t *testing.T) {
 		return false, "profile-path", nil
 	}
 	d := deployer.New(s, deployFunc, nil, "")
-	e, _ := executor.NewNixOSFlake()
+	e := NewExecutorMock("")
 	bc := NewConfirmer(bk, Without, 0, "")
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations, preflight.Command{})
 	go m.Run(t.Context())
 	assert.False(t, m.Fetcher.GetState().IsFetching.GetValue())
 	assert.False(t, m.Builder.State().IsEvaluating.GetValue())
@@ -108,9 +123,7 @@ func TestBuild(t *testing.T) {
 
 	commitId := "id-1"
 	f.TriggerFetch([]string{"remote"})
-	r.RsCh <- &protobuf.RepositoryStatus{
-		SelectedCommitId: commitId,
-	}
+	r.RsCh <- rsAtMain(commitId)
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.True(c, m.Builder.State().IsEvaluating.GetValue())
 		assert.False(c, m.Builder.State().IsBuilding.GetValue())
@@ -128,9 +141,7 @@ func TestBuild(t *testing.T) {
 
 	commitId = "id-2"
 	f.TriggerFetch([]string{"remote"})
-	r.RsCh <- &protobuf.RepositoryStatus{
-		SelectedCommitId: commitId,
-	}
+	r.RsCh <- rsAtMain(commitId)
 	// This simulates the success of an evaluation
 	eMock.evalOk <- true
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -153,9 +164,7 @@ func TestBuild(t *testing.T) {
 
 	// This simulates the success of a build
 	f.TriggerFetch([]string{"remote"})
-	r.RsCh <- &protobuf.RepositoryStatus{
-		SelectedCommitId: "id-3",
-	}
+	r.RsCh <- rsAtMain("id-3")
 	eMock.evalOk <- true
 	eMock.buildOk <- true
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -168,9 +177,7 @@ func TestBuild(t *testing.T) {
 	// This simulates the success of another build and ensure this
 	// new build is the one proposed for deployment.
 	f.TriggerFetch([]string{"remote"})
-	r.RsCh <- &protobuf.RepositoryStatus{
-		SelectedCommitId: "id-4",
-	}
+	r.RsCh <- rsAtMain("id-4")
 	eMock.evalOk <- true
 	eMock.buildOk <- true
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -182,9 +189,7 @@ func TestBuild(t *testing.T) {
 
 	// This simulates the push of new commit while building
 	f.TriggerFetch([]string{"remote"})
-	r.RsCh <- &protobuf.RepositoryStatus{
-		SelectedCommitId: "id-5",
-	}
+	r.RsCh <- rsAtMain("id-5")
 	eMock.evalOk <- true
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.True(c, m.Builder.State().IsBuilding.GetValue())
@@ -209,12 +214,12 @@ func TestDeploy(t *testing.T) {
 		return false, "profile-path", nil
 	}
 	d := deployer.New(s, deployFunc, nil, "")
-	e, _ := executor.NewNixOSFlake()
+	e := NewExecutorMock("")
 	bc := NewConfirmer(bk, Without, 0, "")
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "", e, bc, dc, bk, emptyConfigurationOperations, preflight.Command{})
 	go m.Run(t.Context())
 	assert.False(t, m.Fetcher.GetState().IsFetching.GetValue())
 	assert.False(t, m.Builder.State().IsEvaluating.GetValue())
@@ -239,18 +244,16 @@ func TestIncorrectMachineId(t *testing.T) {
 	eMock := NewExecutorMock("invalid-machine-id")
 	b := builder.New(s, eMock, "repoPath", "", "", "my-machine", 2*time.Second, 2*time.Second)
 	d := mkDeployerMock(t)
-	e, _ := executor.NewNixOSFlake()
+	e := NewExecutorMock("")
 	bc := NewConfirmer(bk, Without, 0, "")
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "the-test-machine-id", e, bc, dc, bk, emptyConfigurationOperations)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "the-test-machine-id", e, bc, dc, bk, emptyConfigurationOperations, preflight.Command{})
 	go m.Run(t.Context())
 
 	f.TriggerFetch([]string{"remote"})
-	r.RsCh <- &protobuf.RepositoryStatus{
-		SelectedCommitId: "id",
-	}
+	r.RsCh <- rsAtMain("id")
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.False(t, m.GetState().Builder.IsBuilding.GetValue())
@@ -271,18 +274,16 @@ func TestCorrectMachineId(t *testing.T) {
 	eMock.evalOk <- true
 	b := builder.New(s, eMock, "repoPath", "", "", "my-machine", 2*time.Second, 2*time.Second)
 	d := mkDeployerMock(t)
-	e, _ := executor.NewNixOSFlake()
+	e := NewExecutorMock("")
 	bc := NewConfirmer(bk, Without, 0, "")
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "the-test-machine-id", e, bc, dc, bk, emptyConfigurationOperations)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "the-test-machine-id", e, bc, dc, bk, emptyConfigurationOperations, preflight.Command{})
 	go m.Run(t.Context())
 
 	f.TriggerFetch([]string{"remote"})
-	r.RsCh <- &protobuf.RepositoryStatus{
-		SelectedCommitId: "id",
-	}
+	r.RsCh <- rsAtMain("id")
 
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.True(t, m.GetState().Builder.IsBuilding.GetValue())
@@ -302,13 +303,13 @@ func TestManagerWithDarwinConfiguration(t *testing.T) {
 	b := builder.New(s, eMock, "repoPath", "", "", "my-machine", 2*time.Second, 2*time.Second)
 	d := mkDeployerMock(t)
 
-	// Test with Darwin configuration
-	e, _ := executor.NewNixDarwinFlake()
+	// The executor is a mock: the real Darwin executor reads host state
+	e := NewExecutorMock("")
 	bc := NewConfirmer(bk, Without, 0, "")
 	bc.Start()
 	dc := NewConfirmer(bk, Without, 0, "")
 	dc.Start()
-	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "darwin-machine-id", e, bc, dc, bk, emptyConfigurationOperations)
+	m := New(s, prometheus.New(), scheduler.New(), f, b, d, "darwin-machine-id", e, bc, dc, bk, emptyConfigurationOperations, preflight.Command{})
 
 	// Verify the manager was created with the correct configuration attribute
 	assert.Equal(t, "darwin-machine-id", m.machineId)

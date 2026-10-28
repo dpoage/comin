@@ -3,11 +3,13 @@ package repository
 import (
 	pb "github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/types"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func NewRepositoryStatus(config types.GitConfig, mainCommitId string) *pb.RepositoryStatus {
 	r := &pb.RepositoryStatus{
-		MainCommitId: mainCommitId,
+		MainCommitId:                 mainCommitId,
+		SelectedCommitShouldBeSigned: wrapperspb.Bool(len(config.GpgPublicKeyPaths) > 0),
 	}
 	r.Remotes = make([]*pb.Remote, len(config.Remotes))
 	for i, remote := range config.Remotes {

@@ -7,8 +7,10 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/nlewo/comin/internal/prometheus"
+	pb "github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/types"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestNew(t *testing.T) {
@@ -260,7 +262,8 @@ func TestMultipleRemote(t *testing.T) {
 	// r2/main: c1 - c2 - c3
 	r.Fetch([]string{"r1", "r2"})
 	_ = r.Update()
-	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
+	selected, _ := headOfBranch(t, r1, "main")
+	assert.Equal(t, selected, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
 
@@ -443,7 +446,7 @@ func TestWithoutTesting(t *testing.T) {
 	var err error
 	r1Dir := t.TempDir()
 	cominRepositoryDir := t.TempDir()
-	_, err = initRemoteRepostiory(r1Dir, false)
+	r1, err := initRemoteRepostiory(r1Dir, false)
 	assert.Nil(t, err)
 	gitConfig := types.GitConfig{
 		Path: cominRepositoryDir,
@@ -467,7 +470,8 @@ func TestWithoutTesting(t *testing.T) {
 
 	r.Fetch([]string{"r1"})
 	_ = r.Update()
-	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
+	selected, _ := headOfBranch(t, r1, "main")
+	assert.Equal(t, selected, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "r1", r.RepositoryStatus.SelectedRemoteName)
 }
@@ -501,14 +505,16 @@ func TestRepositoryUpdateMain(t *testing.T) {
 	// The remote repository is initially checkouted
 	r.Fetch([]string{"origin"})
 	_ = r.Update()
-	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
+	selected, _ := headOfBranch(t, remoteRepository, "main")
+	assert.Equal(t, selected, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
 
 	// Without any new remote commits, the local repository is not updated
 	r.Fetch([]string{"origin"})
 	_ = r.Update()
-	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
+	selected, _ = headOfBranch(t, remoteRepository, "main")
+	assert.Equal(t, selected, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
 
@@ -560,7 +566,8 @@ func TestRepositoryUpdateHardResetMain(t *testing.T) {
 	// The remote repository is initially checkouted
 	r.Fetch([]string{"origin"})
 	_ = r.Update()
-	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
+	selected, _ := headOfBranch(t, remoteRepository, "main")
+	assert.Equal(t, selected, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
 
@@ -619,7 +626,8 @@ func TestRepositoryUpdateTesting(t *testing.T) {
 	// The remote repository is initially checkouted on main
 	r.Fetch([]string{"origin"})
 	_ = r.Update()
-	assert.Equal(t, HeadCommitId(r.Repository), r.RepositoryStatus.SelectedCommitId)
+	selected, _ := headOfBranch(t, remoteRepository, "main")
+	assert.Equal(t, selected, r.RepositoryStatus.SelectedCommitId)
 	assert.Equal(t, "main", r.RepositoryStatus.SelectedBranchName)
 	assert.Equal(t, "origin", r.RepositoryStatus.SelectedRemoteName)
 
@@ -785,4 +793,18 @@ func TestUpdateGpg(t *testing.T) {
 	assert.False(t, r.RepositoryStatus.SelectedCommitSigned.GetValue())
 	assert.Equal(t, "", r.RepositoryStatus.SelectedCommitSignedBy)
 	assert.False(t, r.RepositoryStatus.SelectedCommitShouldBeSigned.GetValue())
+}
+
+func TestSetBranchSignedUnreadableCommit(t *testing.T) {
+	r := &repository{gpgPubliKeys: []string{"key"}}
+	r.Repository, _ = repositoryOpen(types.GitConfig{Path: t.TempDir()})
+	branch := &pb.Branch{
+		CommitId: "1111111111111111111111111111111111111111",
+		Signed:   wrapperspb.Bool(true),
+		SignedBy: "test <test@comin.space>",
+	}
+	r.setBranchSigned(branch)
+	assert.False(t, branch.Signed.GetValue())
+	assert.NotNil(t, branch.Signed)
+	assert.Equal(t, "", branch.SignedBy)
 }

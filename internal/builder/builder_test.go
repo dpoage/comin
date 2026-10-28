@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/nlewo/comin/internal/broker"
-	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/store"
 	"github.com/stretchr/testify/assert"
 
@@ -29,6 +29,9 @@ func (n ExecutorMock) NeedToReboot(_, _ string) bool {
 }
 func (n ExecutorMock) IsStorePathExist(storePath string) bool {
 	return n.alreadyBuilt
+}
+func (n ExecutorMock) CurrentSystem() (string, error) {
+	return "", nil
 }
 func (n ExecutorMock) Deploy(ctx context.Context, outPath, operation string) (needToRestartComin bool, profilePath string, err error) {
 	return false, "", nil
@@ -73,11 +76,11 @@ func TestBuilderBuild(t *testing.T) {
 	ctx := t.Context()
 
 	// Run the evaluator
-	_ = b.Eval(ctx, &protobuf.RepositoryStatus{})
+	_ = b.Eval(ctx, repository.Candidate{})
 	gUUID := <-b.EvaluationDone // The evaluation timeouts
 	assert.ErrorContains(t, b.build(ctx, gUUID), "the generation is not evaluated")
 
-	_ = b.Eval(ctx, &protobuf.RepositoryStatus{})
+	_ = b.Eval(ctx, repository.Candidate{})
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		assert.True(c, b.isEvaluating.Load())
 	}, 2*time.Second, 100*time.Millisecond)
@@ -134,7 +137,7 @@ func TestEval(t *testing.T) {
 	assert.Nil(t, err)
 	eMock := NewExecutorMock(false)
 	b := New(s, eMock, "", "", "", "", 5*time.Second, 5*time.Second)
-	_ = b.Eval(t.Context(), &protobuf.RepositoryStatus{})
+	_ = b.Eval(t.Context(), repository.Candidate{})
 	assert.True(t, b.isEvaluating.Load())
 	eMock.evalDone <- struct{}{}
 	gUUID := <-b.EvaluationDone
@@ -156,7 +159,7 @@ func TestEvalAlreadyBuilt(t *testing.T) {
 	assert.Nil(t, err)
 	eMock := NewExecutorMock(true)
 	b := New(s, eMock, "", "", "", "", 5*time.Second, 5*time.Second)
-	_ = b.Eval(t.Context(), &protobuf.RepositoryStatus{})
+	_ = b.Eval(t.Context(), repository.Candidate{})
 	assert.True(t, b.IsEvaluating())
 
 	eMock.evalDone <- struct{}{}
@@ -180,14 +183,14 @@ func TestBuilderPreemption(t *testing.T) {
 	assert.Nil(t, err)
 	eMock := NewExecutorMock(false)
 	b := New(s, eMock, "", "", "", "", 5*time.Second, 5*time.Second)
-	_ = b.Eval(t.Context(), &protobuf.RepositoryStatus{SelectedCommitId: "commit-1"})
+	_ = b.Eval(t.Context(), repository.Candidate{CommitId: "commit-1"})
 	assert.True(t, b.isEvaluating.Load())
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		g, _ := b.store.GenerationGet(b.GenerationUuid)
 		assert.Equal(c, "commit-1", g.SelectedCommitId)
 	}, 2*time.Second, 100*time.Millisecond)
 
-	_ = b.Eval(t.Context(), &protobuf.RepositoryStatus{SelectedCommitId: "commit-2"})
+	_ = b.Eval(t.Context(), repository.Candidate{CommitId: "commit-2"})
 	assert.True(t, b.isEvaluating.Load())
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		g, _ := b.store.GenerationGet(b.GenerationUuid)
@@ -203,7 +206,7 @@ func TestBuilderStop(t *testing.T) {
 	assert.Nil(t, err)
 	eMock := NewExecutorMock(false)
 	b := New(s, eMock, "", "", "", "", 5*time.Second, 5*time.Second)
-	_ = b.Eval(t.Context(), &protobuf.RepositoryStatus{})
+	_ = b.Eval(t.Context(), repository.Candidate{})
 	assert.True(t, b.isEvaluating.Load())
 	b.Stop()
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
@@ -221,7 +224,7 @@ func TestBuilderTimeout(t *testing.T) {
 	assert.Nil(t, err)
 	eMock := NewExecutorMock(false)
 	b := New(s, eMock, "", "", "", "", 1*time.Second, 5*time.Second)
-	_ = b.Eval(t.Context(), &protobuf.RepositoryStatus{})
+	_ = b.Eval(t.Context(), repository.Candidate{})
 	assert.True(t, b.isEvaluating.Load())
 	assert.EventuallyWithT(t, func(c *assert.CollectT) {
 		g, _ := b.store.GenerationGet(b.GenerationUuid)
@@ -240,7 +243,7 @@ func TestBuilderSuspend(t *testing.T) {
 	b := New(s, eMock, "", "", "", "", 1*time.Second, 5*time.Second)
 	_ = b.Suspend()
 	assert.True(t, b.isSuspended)
-	_ = b.Eval(t.Context(), &protobuf.RepositoryStatus{})
+	_ = b.Eval(t.Context(), repository.Candidate{})
 	assert.True(t, b.isEvaluating.Load())
 
 	eMock.evalDone <- struct{}{}

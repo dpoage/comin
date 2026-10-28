@@ -94,3 +94,58 @@ services.comin = {
 ```
 
 Please note this is currently not supported by for nix-darwin configurations.
+
+## How comin reconciles the running system with git
+
+comin is level-triggered: on every tick (30 seconds) and after every
+fetch, build and deployment, it compares the running system
+(`/run/current-system`) with the configuration the repository says
+should run, and deploys it when they differ.
+
+The candidates are the head of the `testing-<hostname>` branch (when
+it is selected) and then the head of the `main` branch. comin only
+evaluates and builds the head of the `main` branch when the testing
+head is refused or failed. The first candidate admitted by the
+`services.comin.preflightCommand` is the one comin deploys, with the
+operation configured for its branch. When no command is configured,
+every candidate is admitted.
+
+A candidate whose latest finished deployment of the same system failed
+is not deployed again automatically. After a comin restart, comin
+retries once a failure that ended before the restart, unless the previous
+finished deployment of the same system also failed. `comin deployment
+switch-latest` reconciles now: the preflight asks of the passes that serve
+the request carry `COMIN_TRIGGER=manual`, and those passes retry such a
+candidate once. The command fails when the repository offers no
+candidate. It returns without waiting for those passes.
+
+A candidate whose evaluation or build failed is evaluated again after a
+completed fetch, whether or not the fetch brought a new commit, and after a
+`comin deployment switch-latest` request; a tick never retries it. A fetch
+that completes while the attempt runs is covered by it, and signals that
+arrive together are coalesced: the re-attempt happens at most once per
+signal, and only for a signal completing after the failure. Until then its
+status is `failed` and comin considers the candidates below it; while it is
+evaluated again its status is `pending` and the candidates below it wait. A
+re-attempt waits while the builder reports an evaluation or build
+running, whichever candidate it belongs to. It also waits while a
+candidate still offered is evaluating, building, or awaiting its build
+or its build confirmation; under a manual build confirmer, an
+unconfirmed build of a current lower candidate holds the re-attempt
+until confirmed. A re-attempt therefore never cancels or repeats another
+candidate's evaluation or build. A candidate no longer offered holds
+the re-attempt only through a builder run still in progress. A
+machine-id mismatch is not retried.
+
+`comin status` reports the last reconcile pass in its `reconcile`
+object. Its `observed_at` is when that pass started, on the host clock,
+and that pass read all its inputs after that time. Take a host time T
+after a change took effect: a status whose `observed_at` is later than T
+comes from a pass that read every input after T.
+
+**Fork behaviour**: when `services.comin.preflightCommand` is `null`,
+comin reverts a change made outside of comin (`nixos-rebuild`, a
+closure activated by hand, ...) at the next tick, without any new
+commit. Upstream comin only deploys when a new commit is fetched. To
+let a machine run something else than the repository, set a preflight
+command that refuses the candidates while that is wanted.

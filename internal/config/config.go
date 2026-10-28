@@ -2,10 +2,12 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nlewo/comin/internal/types"
 	"github.com/sirupsen/logrus"
@@ -44,9 +46,28 @@ func Read(path string) (config types.Configuration, err error) {
 		if remote.Branches.Testing.Operation == "" {
 			config.Remotes[i].Branches.Testing.Operation = "test"
 		}
-
+		supportedOperations := []string{"switch", "test"}
+		if !slices.Contains(supportedOperations, config.Remotes[i].Branches.Main.Operation) {
+			return config, fmt.Errorf("config: remote '%s': branches.main.operation is '%s' while comin converges the running system and an operation that does not activate it never converges: it must be one of '%s'", remote.Name, config.Remotes[i].Branches.Main.Operation, supportedOperations)
+		}
+		if !slices.Contains(supportedOperations, config.Remotes[i].Branches.Testing.Operation) {
+			return config, fmt.Errorf("config: remote '%s': branches.testing.operation is '%s' while comin converges the running system and an operation that does not activate it never converges: it must be one of '%s'", remote.Name, config.Remotes[i].Branches.Testing.Operation, supportedOperations)
+		}
 	}
 
+	if config.PreflightCommand != "" && !filepath.IsAbs(config.PreflightCommand) {
+		return config, fmt.Errorf("config: preflight_command is '%s' while it must be an absolute path", config.PreflightCommand)
+	}
+	if config.PreflightTimeout < 0 {
+		return config, fmt.Errorf("config: preflight_timeout is '%d' seconds while it must not be negative (0 or absent means the default of 60 seconds)", config.PreflightTimeout)
+	}
+	// A larger value overflows when converted to a time.Duration of seconds.
+	if maxSeconds := int64(math.MaxInt64 / time.Second); int64(config.PreflightTimeout) > maxSeconds {
+		return config, fmt.Errorf("config: preflight_timeout is '%d' seconds while it must be at most %d seconds", config.PreflightTimeout, maxSeconds)
+	}
+	if config.PreflightTimeout == 0 {
+		config.PreflightTimeout = 60
+	}
 	if config.ApiServer.ListenAddress == "" {
 		config.ApiServer.ListenAddress = "127.0.0.1"
 	}

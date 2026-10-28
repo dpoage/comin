@@ -10,27 +10,27 @@ import (
 	"github.com/nlewo/comin/internal/protobuf"
 	"github.com/nlewo/comin/internal/repository"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 type Fetcher struct {
-	isFetching         atomic.Bool
-	repositoryStatus   *protobuf.RepositoryStatus
-	mu                 sync.RWMutex
-	submitRemotes      chan []string
-	RepositoryStatusCh chan *protobuf.RepositoryStatus
-	repo               repository.Repository
+	isFetching       atomic.Bool
+	repositoryStatus *protobuf.RepositoryStatus
+	mu               sync.RWMutex
+	submitRemotes    chan []string
+	fetched          chan struct{}
+	repo             repository.Repository
 }
 
 func NewFetcher(repo repository.Repository) *Fetcher {
 	f := &Fetcher{
-		repo:               repo,
-		submitRemotes:      make(chan []string),
-		RepositoryStatusCh: make(chan *protobuf.RepositoryStatus),
+		repo:          repo,
+		submitRemotes: make(chan []string),
+		fetched:       make(chan struct{}, 1),
 	}
 	f.repositoryStatus = repo.GetRepositoryStatus()
 	return f
-
 }
 
 func (f *Fetcher) IsFetching() bool {
@@ -39,6 +39,20 @@ func (f *Fetcher) IsFetching() bool {
 
 func (f *Fetcher) TriggerFetch(remotes []string) {
 	f.submitRemotes <- remotes
+}
+
+// Latest returns a copy of the repository status of the last completed fetch.
+func (f *Fetcher) Latest() *protobuf.RepositoryStatus {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return proto.CloneOf(f.repositoryStatus)
+}
+
+// Fetched returns a channel signalled after every completed fetch, failed or not.
+// Its capacity is one, so signals pending together coalesce; it has a single
+// reader, as a second receiver would take signals from the first.
+func (f *Fetcher) Fetched() <-chan struct{} {
+	return f.fetched
 }
 
 type RemoteState struct {
@@ -56,7 +70,7 @@ func (f *Fetcher) GetState() *protobuf.Fetcher {
 	defer f.mu.RUnlock()
 	return &protobuf.Fetcher{
 		IsFetching:       wrapperspb.Bool(f.isFetching.Load()),
-		RepositoryStatus: f.repo.GetRepositoryStatus(),
+		RepositoryStatus: proto.CloneOf(f.repositoryStatus),
 	}
 }
 
@@ -64,24 +78,25 @@ func (f *Fetcher) Start(ctx context.Context) {
 	logrus.Info("fetcher: starting")
 	go func() {
 		remotes := make([]string, 0)
-		var workerRepositoryStatusCh chan *protobuf.RepositoryStatus
+		var fetchResultCh chan *protobuf.RepositoryStatus
 		for {
 			select {
 			case submittedRemotes := <-f.submitRemotes:
 				logrus.Debugf("fetch: remotes submitted: %s", submittedRemotes)
 				remotes = union(remotes, submittedRemotes)
-			case rs := <-workerRepositoryStatusCh:
+			case rs := <-fetchResultCh:
 				f.isFetching.Store(false)
 				f.mu.Lock()
-				if rs.SelectedCommitId != f.repositoryStatus.SelectedCommitId || rs.SelectedBranchIsTesting.GetValue() != f.repositoryStatus.SelectedBranchIsTesting.GetValue() {
-					f.repositoryStatus = rs
-					f.RepositoryStatusCh <- rs
-				}
+				f.repositoryStatus = rs
 				f.mu.Unlock()
+				select {
+				case f.fetched <- struct{}{}:
+				default:
+				}
 			}
 			if !f.isFetching.Load() && len(remotes) != 0 {
 				f.isFetching.Store(true)
-				workerRepositoryStatusCh = f.repo.FetchAndUpdate(ctx, remotes)
+				fetchResultCh = f.repo.FetchAndUpdate(ctx, remotes)
 				remotes = []string{}
 			}
 		}

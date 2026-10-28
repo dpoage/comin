@@ -69,6 +69,11 @@ type Configuration struct {
 	Exporter              HttpServer `yaml:"exporter"`
 	GpgPublicKeyPaths     []string   `yaml:"gpg_public_key_paths"`
 	PostDeploymentCommand string     `yaml:"post_deployment_command"`
-	BuildConfirmer        Confirmer  `yaml:"build_confirmer"`
-	DeployConfirmer       Confirmer  `yaml:"deploy_confirmer"`
+	// PreflightCommand is the absolute path of a command run before comin
+	// activates a candidate. An empty string admits every candidate.
+	PreflightCommand string `yaml:"preflight_command"`
+	// PreflightTimeout bounds one preflight run in seconds.
+	PreflightTimeout int       `yaml:"preflight_timeout"`
+	BuildConfirmer   Confirmer `yaml:"build_confirmer"`
+	DeployConfirmer  Confirmer `yaml:"deploy_confirmer"`
 }

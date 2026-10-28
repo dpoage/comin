@@ -5,7 +5,9 @@ import (
 
 	"github.com/nlewo/comin/internal/broker"
 	"github.com/nlewo/comin/internal/protobuf"
+	"github.com/nlewo/comin/internal/repository"
 	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestDeploymentCommitAndLoad(t *testing.T) {
@@ -46,6 +48,24 @@ func TestLastDeployment(t *testing.T) {
 	assert.Equal(t, "2", last.Uuid)
 }
 
+// After a restart with exactly one stored deployment, that deployment
+// is comin's current/previous deployment.
+func TestLastDeploymentWithExactlyOne(t *testing.T) {
+	tmp := t.TempDir()
+	bk := broker.New()
+	bk.Start()
+	s, _ := New(bk, "state.json", tmp+"/gcroots", 2, 2)
+	ok, d := s.LastDeployment()
+	assert.False(t, ok)
+	assert.Nil(t, d)
+
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "only", Operation: "switch"})
+	ok, d = s.LastDeployment()
+	assert.True(t, ok)
+	assert.NotNil(t, d)
+	assert.Equal(t, "only", d.Uuid)
+}
+
 func TestDeploymentInsert(t *testing.T) {
 	tmp := t.TempDir()
 	bk := broker.New()
@@ -60,11 +80,10 @@ func TestDeploymentInsert(t *testing.T) {
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "3", Operation: "switch"})
 	assert.True(t, hasEvicted)
 	assert.Equal(t, "1", evicted.Uuid)
-	expected := []*protobuf.Deployment{
+	assertDeployments(t, []*protobuf.Deployment{
 		{Uuid: "3", Operation: "switch"},
 		{Uuid: "2", Operation: "switch"},
-	}
-	assert.Equal(t, expected, s.DeploymentList())
+	}, s.DeploymentList())
 
 	hasEvicted, _ = s.DeploymentInsert(&protobuf.Deployment{Uuid: "4", Operation: "test"})
 	assert.False(t, hasEvicted)
@@ -73,13 +92,12 @@ func TestDeploymentInsert(t *testing.T) {
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "6", Operation: "test"})
 	assert.True(t, hasEvicted)
 	assert.Equal(t, "4", evicted.Uuid)
-	expected = []*protobuf.Deployment{
+	assertDeployments(t, []*protobuf.Deployment{
 		{Uuid: "6", Operation: "test"},
 		{Uuid: "5", Operation: "test"},
 		{Uuid: "3", Operation: "switch"},
 		{Uuid: "2", Operation: "switch"},
-	}
-	assert.Equal(t, expected, s.DeploymentList())
+	}, s.DeploymentList())
 
 	hasEvicted, evicted = s.DeploymentInsert(&protobuf.Deployment{Uuid: "7", Operation: "switch"})
 	assert.True(t, hasEvicted)
@@ -89,10 +107,55 @@ func TestDeploymentInsert(t *testing.T) {
 	assert.Equal(t, "3", evicted.Uuid)
 }
 
+// A store at capacity evicts the finished deployment's own row, not the
+// in-flight deployment's row appended after it.
+func TestDeploymentInsertAtCapacityKeepsTheDeploymentInFlight(t *testing.T) {
+	bk := broker.New()
+	bk.Start()
+	s, _ := New(bk, "state.json", t.TempDir()+"/gcroots", 2, 2)
+	s.DeploymentInsert(&protobuf.Deployment{Uuid: "old", Operation: "switch", Status: StatusToString(Done)})
+	a := s.NewDeployment(&protobuf.Generation{}, "switch", "")
+	_, err := s.DeploymentStarted(a.Uuid)
+	assert.NoError(t, err)
+	a, err = s.DeploymentFinished(a.Uuid, nil, false, "")
+	assert.NoError(t, err)
+	b := s.NewDeployment(&protobuf.Generation{}, "switch", "")
+	_, err = s.DeploymentStarted(b.Uuid)
+	assert.NoError(t, err)
+
+	hasEvicted, evicted := s.DeploymentInsert(a)
+	assert.True(t, hasEvicted)
+	assert.Equal(t, a.Uuid, evicted.Uuid)
+
+	_, err = s.DeploymentFinished(b.Uuid, nil, false, "")
+	assert.NoError(t, err, "the deployment in flight is still in the store")
+	assert.Equal(t, []string{a.Uuid, "old", b.Uuid}, uuids(s.DeploymentList()))
+}
+
+// assertDeployments compares deployments with proto.Equal so cloned
+// messages (internal protobuf state makes reflect.DeepEqual fail) are
+// still compared field by field, operation included.
+func assertDeployments(t *testing.T, expected, got []*protobuf.Deployment) {
+	t.Helper()
+	if assert.Len(t, got, len(expected)) {
+		for i := range expected {
+			assert.True(t, proto.Equal(expected[i], got[i]),
+				"deployment %d differs: expected %v, got %v", i, expected[i], got[i])
+		}
+	}
+}
+func uuids(dpls []*protobuf.Deployment) []string {
+	ids := make([]string, len(dpls))
+	for i, d := range dpls {
+		ids[i] = d.Uuid
+	}
+	return ids
+}
+
 func TestNewGeneration(t *testing.T) {
 	tmp := t.TempDir()
 	bk := broker.New()
 	bk.Start()
 	s, _ := New(bk, tmp+"/filename", tmp+"/gcroots", 2, 2)
-	s.NewGeneration("hostname", "repositoryPath", "repositoryDir", "systemAttr", &protobuf.RepositoryStatus{})
+	s.NewGeneration("hostname", "repositoryPath", "repositoryDir", "systemAttr", repository.Candidate{})
 }

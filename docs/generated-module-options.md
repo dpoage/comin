@@ -362,7 +362,9 @@ A path to a script executed after each
 deployment\. comin provides to the script the following
 environment variables: ` COMIN_GIT_SHA `, ` COMIN_GIT_REF `,
 ` COMIN_GIT_MSG `, ` COMIN_HOSTNAME `, ` COMIN_FLAKE_URL `,
-` COMIN_GENERATION `, ` COMIN_STATUS ` and ` COMIN_ERROR_MSG `\.
+` COMIN_GENERATION `, ` COMIN_STATUS `, ` COMIN_ERROR_MSG ` and
+` COMIN_OPERATION ` (the deployment’s operation: ` switch ` or
+` test `)\.
 
 
 
@@ -382,6 +384,55 @@ null or absolute path
 pkgs.writers.writeBash "post" "echo $COMIN_GIT_SHA";
 
 ```
+
+
+
+## services\.comin\.preflightCommand
+
+
+
+An absolute path to a command run before comin activates a
+candidate and on every reconcile tick for each candidate
+comin considers\. Exit 0 admits; anything else (nonzero,
+killed, cannot start, timeout) refuses\. The refusal reason
+shown by ` comin status ` is the first stdout line when it is
+not empty (cut to 4096 bytes, invalid UTF-8 replaced), else
+comin’s own ` preflight: <cause> ` line\.
+Environment: COMIN_OUT_PATH, COMIN_GIT_SHA, COMIN_GIT_REF
+(\<remote>/\<branch>), COMIN_GIT_MSG, COMIN_BRANCH
+(` main `|` testing `), COMIN_OPERATION, COMIN_CURRENT_SYSTEM,
+COMIN_TRIGGER (` poll `|` manual `), COMIN_HOSTNAME\. When null,
+comin admits every candidate and this fork reverts any
+out-of-band change of the running system at the next tick\.
+
+
+
+*Type:*
+null or absolute path
+
+
+
+*Default:*
+` null `
+
+
+
+## services\.comin\.preflightTimeout
+
+
+
+Seconds before comin kills the preflight run (its process
+group) and counts it as a refusal\.
+
+
+
+*Type:*
+positive integer, meaning >0
+
+
+
+*Default:*
+` 60 `
 
 
 
@@ -512,12 +563,15 @@ string
 
 
 
-The switch-to-configuration operation to do on this branch\.
+The switch-to-configuration operation on this
+branch\. comin converges the running system; an
+operation that does not activate it, such as
+` boot `, never converges and is not offered\.
 
 
 
 *Type:*
-one of “switch”, “test”, “boot”
+one of “switch”, “test”
 
 
 
@@ -566,12 +620,15 @@ string
 
 
 
-The switch-to-configuration operation to do on this branch\.
+The switch-to-configuration operation on this
+branch\. comin converges the running system; an
+operation that does not activate it, such as
+` boot `, never converges and is not offered\.
 
 
 
 *Type:*
-one of “switch”, “test”, “boot”
+one of “switch”, “test”
 
 
 
