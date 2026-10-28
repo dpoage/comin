@@ -56,10 +56,6 @@ func headOfBranch(t *testing.T, r *git.Repository, branch string) (string, strin
 	return ref.Hash().String(), commit.Message
 }
 
-// TestCandidates walks the repository state matrix and asserts the
-// ordered candidate list derived from the repository status: the testing
-// head when testing is selected, then the main commit — including the
-// main candidate while testing is selected.
 func TestCandidates(t *testing.T) {
 	t.Run("main only", func(t *testing.T) {
 		r1Dir := t.TempDir()
@@ -254,8 +250,7 @@ func TestCandidates(t *testing.T) {
 	})
 }
 
-// TestCandidatesSignatureVerdict asserts each candidate carries the
-// signature verdict of its own commit and not the selected commit's.
+// Each candidate carries the signature verdict of its own commit, not the selected commit's.
 func TestCandidatesSignatureVerdict(t *testing.T) {
 	f, _ := os.Open("./test.private")
 	entityList, _ := openpgp.ReadArmoredKeyRing(f)

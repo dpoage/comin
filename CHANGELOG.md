@@ -61,10 +61,11 @@
   `comin deployment switch-latest` request, at most once per signal: signals
   that arrive together are coalesced, and a fetch completing while the
   attempt runs is covered by it. A tick never retries it. A re-attempt waits
-  while the builder reports an evaluation or build running, or while a
-  candidate still offered is evaluating, building, or awaiting its build or
-  its build confirmation (under a manual build confirmer, an unconfirmed
-  build holds it until confirmed), so it never cancels or repeats another
-  candidate's evaluation or build; a candidate no longer offered never holds
-  it. While it is evaluated again
-  its status is `pending`. A machine-id mismatch is not retried.
+  while the builder reports an evaluation or build running, whichever
+  candidate it belongs to, or while a candidate still offered is evaluating,
+  building, or awaiting its build or its build confirmation (under a manual
+  build confirmer, an unconfirmed build holds it until confirmed), so it
+  never cancels or repeats another candidate's evaluation or build. A
+  candidate no longer offered holds it only through a builder run still in
+  progress. While it is evaluated again its status is `pending`. A
+  machine-id mismatch is not retried.

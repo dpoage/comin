@@ -55,9 +55,7 @@ func TestFetcher(t *testing.T) {
 	assert.Eventually(t, func() bool { return f.Latest().SelectedCommitId != "id-5" }, 5*time.Second, 50*time.Millisecond)
 }
 
-// TestFetcherFetchedSignal asserts a signal is delivered after every
-// completed fetch — whether the selection changed, did not change, or
-// the fetch failed — and that Latest then returns that fetch's status.
+// A signal follows every completed fetch, and Latest then returns that fetch's status.
 func TestFetcherFetchedSignal(t *testing.T) {
 	r := utils.NewRepositoryMock()
 	f := NewFetcher(r)

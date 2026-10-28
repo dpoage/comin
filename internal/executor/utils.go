@@ -310,7 +310,7 @@ func deployWith(
 	beforeCominUnitFileHash := unitHash()
 
 	// This is required to write boot entries
-	// Only do this is operation is switch
+	// Only do this if the operation is switch
 	if profilePath, err = profile.SetSystemProfile(operation, outPath, false); err != nil {
 		return
 	}

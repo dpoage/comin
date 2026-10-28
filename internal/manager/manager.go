@@ -1,6 +1,6 @@
-// The manager drives the components: it observes the fetcher, the
-// builder, the confirmers, the store and the running system, asks the
-// reconcile package for the next step and applies it (see pass.go).
+// The manager drives the components: it observes the fetcher, the builder,
+// the confirmers, the store and the running system, asks the reconcile
+// package for the next step and applies it.
 
 package manager
 
@@ -53,9 +53,8 @@ type Manager struct {
 
 	configurationOperations ConfigurationOperations
 
-	// isSuspended is the suspension the passes read. Suspend sets it under
-	// passMu, which a pass holds from observe through apply, before it
-	// suspends the builder and the deployer.
+	// isSuspended is the suspension the passes read; Suspend sets it under
+	// passMu before it suspends the builder and the deployer.
 	isSuspended atomic.Bool
 	passMu      sync.Mutex
 
@@ -73,9 +72,8 @@ type Manager struct {
 	wakeCh    chan struct{}
 	triggerCh chan string
 
-	// cache, cacheSeq and retryEpoch belong to the pass goroutine. A failed
-	// generation is evaluated again once retryEpoch moved past the epoch its
-	// failure landed in.
+	// cache, cacheSeq and retryEpoch belong to the pass goroutine; a failed
+	// generation is evaluated again once retryEpoch passes its failure epoch.
 	cache      map[genKey]*cached
 	cacheSeq   int
 	retryEpoch uint64
@@ -197,8 +195,8 @@ func (m *Manager) SwitchDeploymentLatest() error {
 	return nil
 }
 
-// Suspend marks the manager suspended for the passes before it suspends the
-// builder, whose cancelled build wakes a pass, and the deployer.
+// Suspend marks the manager suspended before it suspends the builder, whose
+// cancelled build wakes a pass, and the deployer.
 func (m *Manager) Suspend() error {
 	m.passMu.Lock()
 	if m.isSuspended.Load() {
@@ -275,9 +273,8 @@ func (m *Manager) Run(ctx context.Context) {
 			m.prometheus.SetDeploymentInfo(dpl.Generation.SelectedCommitId, dpl.Status)
 			getsEvicted, evicted := m.storage.DeploymentInsertAndCommit(dpl)
 
-			// We remove the evicted deployment profile
-			// path only if this profile path is not used
-			// by any still alive other deployments.
+			// The evicted profile path is removed only if no still alive
+			// deployment uses it.
 			if getsEvicted && evicted.ProfilePath != "" {
 				alive := false
 				for _, d := range m.storage.DeploymentList() {

@@ -42,9 +42,7 @@ func assertHeadUntouched(t *testing.T, dir string, before headFile, when string)
 	assert.Equal(t, []string{".git"}, names, "%s: the working tree was written", when)
 }
 
-// No fetch writes .git/HEAD or the working tree, whether the selection
-// changes or not, and a repository comin just initialized keeps the unborn
-// HEAD it started with.
+// No fetch writes .git/HEAD or the working tree; a fresh repository keeps its unborn HEAD.
 func TestUpdateNeverChecksOut(t *testing.T) {
 	r1Dir := t.TempDir()
 	r1, _ := initRemoteRepostiory(r1Dir, true)

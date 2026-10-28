@@ -32,8 +32,7 @@ func TestBasic(t *testing.T) {
 	assert.Contains(t, out, "COMIN_GIT_SHA=")
 }
 
-// The post-deployment command sees COMIN_OPERATION equal to the
-// deployment's operation. Mutant: delete the env line.
+// The post-deployment command sees COMIN_OPERATION equal to the deployment's operation.
 func TestCominOperationEnvVar(t *testing.T) {
 	deployment := &protobuf.Deployment{
 		Uuid:       "uuid",

@@ -26,25 +26,18 @@ type Command struct {
 	Timeout time.Duration
 }
 
-// Verdict is the outcome of Ask. Reason is the first stdout line of the child, or a
-// line starting "preflight: " naming the cause of a refusal that printed nothing.
+// Verdict is the outcome of Ask. Reason is the first stdout line of the child, or,
+// for a refusal with no output, a "preflight: " line naming the cause. The line is
+// cut to 4096 bytes before invalid UTF-8 becomes U+FFFD, so Reason can exceed 4096 bytes.
 type Verdict struct {
 	Admitted bool
 	Reason   string
 }
 
-// Ask runs c with os.Environ() followed by env and admits iff it starts and
-// exits 0 before c.Timeout (measured from start) and before ctx ends; every
-// other outcome refuses, and Path "" admits without starting a process.
-// Ask owns the child's process group: whatever the verdict, it kills the
-// whole group before returning, and returns within c.Timeout + 5s even when
-// a grandchild keeps stdout open (a setsid grandchild that left the group is
-// no longer a member). Reason is the child's first stdout line truncated to
-// its first 4096 bytes, then strings.ToValidUTF8 with U+FFFD (Reason travels
-// as a proto3 string), or, when there is none, a
-// "preflight: " line naming the leader's real cause: exit status N or signal
-// S when the leader exited before the timer fired or ctx ended, else the
-// timeout or ctx end. Timeout <= 0 with a non-empty Path panics.
+// Ask runs c with os.Environ() followed by env. It admits iff c starts and exits 0
+// before c.Timeout and before ctx ends; Path "" admits without starting a process,
+// and Timeout <= 0 with a Path panics. It kills the child's whole process group
+// before returning, and returns within c.Timeout + 5s even when a grandchild holds stdout.
 func Ask(ctx context.Context, c Command, env []string) Verdict {
 	if c.Path == "" {
 		return Verdict{Admitted: true}

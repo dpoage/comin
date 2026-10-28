@@ -153,10 +153,10 @@ func (d *Deployer) Resume() {
 	}
 }
 
-// SetPreActivation installs check, run before every deployment, and
-// abandoned, called on the runner goroutine with a generation check
-// admitted while the deployer got suspended: it is not deployed. Both are
-// required; SetPreActivation must be called before Run.
+// SetPreActivation installs check, which runs before every deployment, and
+// abandoned, which the runner calls with a generation that check admitted
+// while the deployer was suspended; that generation is not deployed.
+// Both are required: a nil abandoned panics the runner. Call it before Run.
 func (d *Deployer) SetPreActivation(check PreActivation, abandoned func(*protobuf.Generation)) {
 	d.preActivation = check
 	d.abandoned = abandoned

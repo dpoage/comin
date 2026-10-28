@@ -41,19 +41,16 @@ func (f *Fetcher) TriggerFetch(remotes []string) {
 	f.submitRemotes <- remotes
 }
 
-// Latest returns a copy of the repository status of the last completed
-// fetch.
+// Latest returns a copy of the repository status of the last completed fetch.
 func (f *Fetcher) Latest() *protobuf.RepositoryStatus {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return proto.CloneOf(f.repositoryStatus)
 }
 
-// Fetched returns a channel signalled after every completed fetch,
-// whether the selection changed, did not change, or the fetch failed.
-// The channel has a capacity of one: signals of fetches completed while
-// a signal is still pending are coalesced into it. It has a single reader:
-// a second receiver would take signals from the first.
+// Fetched returns a channel signalled after every completed fetch, failed or not.
+// Its capacity is one, so signals pending together coalesce; it has a single
+// reader, as a second receiver would take signals from the first.
 func (f *Fetcher) Fetched() <-chan struct{} {
 	return f.fetched
 }

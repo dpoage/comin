@@ -22,9 +22,8 @@ import (
 
 var emptyConfigurationOperations = map[string]map[string]string{}
 
-// rsAtMain is a repository status selecting commitId, which is also the head
-// of the main branch of its remote, so repository.Candidates yields it as the
-// main candidate.
+// rsAtMain is a repository status selecting commitId, also the head of main,
+// so repository.Candidates yields it as the main candidate.
 func rsAtMain(commitId string) *protobuf.RepositoryStatus {
 	return &protobuf.RepositoryStatus{
 		SelectedCommitId: commitId,

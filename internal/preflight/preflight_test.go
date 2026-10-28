@@ -185,9 +185,7 @@ func TestAskKillsGroupWhateverTheVerdict(t *testing.T) {
 	}
 }
 
-// A leader that exited (status N or signal S) before the timer fired or ctx
-// ended keeps that cause even when the timer or ctx fires later while a
-// grandchild holds stdout.
+// The leader's exit cause survives a later timer or ctx end while a grandchild holds stdout.
 func TestAskNamesLeadersExitCauseWhenGrandchildHoldsStdout(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("needs /proc")
@@ -217,8 +215,7 @@ func TestAskNamesLeadersExitCauseWhenGrandchildHoldsStdout(t *testing.T) {
 	}
 }
 
-// Ask returns within Timeout+5s when the leader exits but a grandchild holds
-// stdout: in-group (killed at return) and setsid (out of the group).
+// Ask returns within Timeout+5s when a grandchild, in or out of the group, holds stdout.
 func TestAskReturnsBoundedWhenGrandchildHoldsStdout(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("needs /proc")
@@ -291,8 +288,7 @@ func TestAskReasonIsFirstStdoutLine(t *testing.T) {
 	})
 }
 
-// A first line that is not valid UTF-8 still yields a Reason derived from it,
-// sanitized so it can travel as a proto3 string.
+// A first line that is not valid UTF-8 still yields a sanitized Reason.
 func TestAskReasonIsValidUTF8(t *testing.T) {
 	run := func(body string) preflight.Verdict {
 		p := script(t, body, 0o755)

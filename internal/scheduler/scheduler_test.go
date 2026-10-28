@@ -37,9 +37,6 @@ func initRemoteRepository(t *testing.T, dir string) {
 	assert.Nil(t, err)
 }
 
-// TestFetchRemotesRunsTheFirstFetchAtStart asserts the first fetch of
-// every remote with a nonzero poller period runs at comin start, without
-// waiting one period.
 func TestFetchRemotesRunsTheFirstFetchAtStart(t *testing.T) {
 	r1Dir := t.TempDir()
 	r2Dir := t.TempDir()

@@ -35,9 +35,7 @@ func holdAPass(t *testing.T, r *rig) {
 	require.Eventually(t, func() bool { return r.lateReads() > held }, 15*time.Second, 5*time.Millisecond, "no ask read its verdict")
 }
 
-// The first status observed after an action reflects a pass that started
-// after it, even when a pass that read its inputs before the action ends
-// after it.
+// The first status observed after an action comes from a pass that started after it.
 func TestObservedAtFollowsTheAction(t *testing.T) {
 	t.Run("a verdict flip", func(t *testing.T) {
 		r := newRig(t, rigOpts{preflight: true})

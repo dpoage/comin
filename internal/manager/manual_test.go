@@ -98,9 +98,8 @@ func TestSwitchDeploymentLatestRetriesOnce(t *testing.T) {
 	assert.Len(t, r.exec.deployLog(), 1, "poll passes do not retry the failed deployment")
 }
 
-// waitManualPass waits for the manual ask of main logged from the from-th
-// ask on, the last ask of a manual pass over both candidates, and returns
-// its index.
+// waitManualPass waits for the manual ask of main logged from the from-th ask
+// on, the last ask of a manual pass, and returns its index.
 func waitManualPass(t *testing.T, r *rig, from int) int {
 	t.Helper()
 	at := -1
@@ -165,8 +164,8 @@ func TestSwitchDeploymentLatestRetryIsSingleUse(t *testing.T) {
 	require.NoError(t, r.m.SwitchDeploymentLatest())
 	waitManualPass(t, r, before)
 
-	// The testing gate opens for poll passes: the failed deployment is
-	// not retried without a new request.
+	// The testing verdict admits again for poll passes: the failed deployment
+	// is not retried without a new request.
 	r.verdict("testing", "admit")
 	r.settle(10)
 	assert.Len(t, r.exec.deployLog(), 1, "the retry was used by a pass that served no request")

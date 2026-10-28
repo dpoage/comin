@@ -49,8 +49,7 @@ func TestLastDeployment(t *testing.T) {
 }
 
 // After a restart with exactly one stored deployment, that deployment
-// is comin's current/previous deployment. Mutant: revert the fix (len(...) >
-// 1 instead of > 0), which makes ok=false for exactly one deployment.
+// is comin's current/previous deployment.
 func TestLastDeploymentWithExactlyOne(t *testing.T) {
 	tmp := t.TempDir()
 	bk := broker.New()
@@ -108,11 +107,8 @@ func TestDeploymentInsert(t *testing.T) {
 	assert.Equal(t, "3", evicted.Uuid)
 }
 
-// The manager inserts every finished deployment again. When the next
-// deployment already started, its row (appended by NewDeployment) is the
-// last one; a store at capacity must evict the finished deployment's own
-// row, not the one in flight, or the in-flight deployment's end is never
-// recorded. Mutant: evict the last row of the kind.
+// A store at capacity evicts the finished deployment's own row, not the
+// in-flight deployment's row appended after it.
 func TestDeploymentInsertAtCapacityKeepsTheDeploymentInFlight(t *testing.T) {
 	bk := broker.New()
 	bk.Start()

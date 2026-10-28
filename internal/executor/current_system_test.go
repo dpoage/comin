@@ -8,9 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Every executor, darwin included, reads the current-system symlink. The
-// test points the reader at a scratch symlink so it also fails on hosts
-// without /run/current-system.
+// Every executor, darwin included, reads the current-system symlink.
 func TestCurrentSystemIsTheSameOnEveryPlatform(t *testing.T) {
 	link := filepath.Join(t.TempDir(), "current-system")
 	assert.NoError(t, os.Symlink("/nix/store/aaaa-comin-current-system", link))

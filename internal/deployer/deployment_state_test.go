@@ -16,8 +16,7 @@ import (
 )
 
 // writeBlockingPostDeploymentCommand writes a post-deployment command that
-// signals it started and then blocks until a release file exists. It
-// returns the script path and the directory holding the marker files.
+// creates started, then blocks until release exists; it returns script and dir.
 func writeBlockingPostDeploymentCommand(t *testing.T) (script, dir string) {
 	t.Helper()
 	dir = t.TempDir()
@@ -47,9 +46,7 @@ func waitForFile(t *testing.T, path string) {
 	}
 }
 
-// While the deploy func runs, the deployer's own deployment is the store's
-// started copy, so comin status reports a running deployment. Mutant:
-// delete the d.deployment.Store(started) line in Run.
+// While the deploy func runs, comin status reports the store's started copy.
 func TestDeployerShowsTheRunningDeploymentWhileDeploying(t *testing.T) {
 	deployFuncStarted := make(chan struct{})
 	deployFuncDone := make(chan struct{})
@@ -86,10 +83,8 @@ func TestDeployerShowsTheRunningDeploymentWhileDeploying(t *testing.T) {
 	}
 }
 
-// While the post-deployment command runs, the deployer's own deployment is
-// the store's finished copy, so comin status reports the deploy outcome and
-// not a deployment still running. Mutant: move the
-// d.deployment.Store(deployment) line in Run after runPostDeploymentCommand.
+// While the post-deployment command runs, comin status reports the store's
+// finished copy, not a deployment still running.
 func TestDeployerShowsTheFinishedDeploymentWhileThePostDeploymentCommandRuns(t *testing.T) {
 	deployFunc := func(context.Context, string, string) (bool, string, error) {
 		return false, "profile-path", nil
@@ -122,8 +117,7 @@ func TestDeployerShowsTheFinishedDeploymentWhileThePostDeploymentCommandRuns(t *
 	}
 }
 
-// The same holds when the deploy func errors: while the post-deployment
-// command runs the deployer shows the failed deployment, not a running one.
+// The same holds when the deploy func errors: the failed deployment is shown.
 func TestDeployerShowsTheFailedDeploymentWhileThePostDeploymentCommandRuns(t *testing.T) {
 	deployFunc := func(context.Context, string, string) (bool, string, error) {
 		return false, "", errors.New("switch-to-configuration failed")

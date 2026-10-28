@@ -10,18 +10,16 @@ type Candidate struct {
 	Testing                             bool
 	MainCommitId                        string // the main commit the candidate sits on (copied into the generation)
 	MainRemoteName, MainBranchName      string // copied from rs.main_remote_name/main_branch_name (generation fields)
-	// Verified = !required || (a verdict exists for exactly CommitId && it
-	// is signed), where required is rs.selected_commit_should_be_signed, set
-	// from the configured GPG keys when the status is created.
+	// Verified: no signature is required (rs.selected_commit_should_be_signed
+	// is false), or the branch holds a signed verdict for exactly CommitId.
 	Verified bool
 	SignedBy string // the signer's primary identity name when signed
 }
 
 // Candidates returns the deployable commits of a repository status, most
-// preferred first: the testing head when a testing branch is selected,
-// then the main commit. The main commit is taken from the first remote in
-// rs.remotes order holding it without a fetch error, else from the first
-// remote holding it. It reads only rs.
+// preferred first: the testing head when a testing branch is selected, then
+// the main commit, taken from the first remote in rs.remotes order holding it
+// without a fetch error, else the first holding it. It reads only rs.
 func Candidates(rs *pb.RepositoryStatus) []Candidate {
 	candidates := []Candidate{}
 

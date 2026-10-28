@@ -7,9 +7,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// currentSystem reads the store path the host is currently running. It
-// is a variable so a test can point the executors at a scratch symlink,
-// on hosts without /run/current-system.
+// currentSystem reads the store path the host is running; a variable so a test
+// can point the executors at a scratch symlink.
 var currentSystem = utils.CurrentSystem
 
 type EvalFunc func(ctx context.Context, repositoryPath, repositorySubdir, commitId, systemAttr, hostname string) (drvPath string, outPath string, machineId string, err error)

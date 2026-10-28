@@ -48,7 +48,7 @@ func startComin(t *testing.T, remoteDir, stateDir string) plumbing.Hash {
 	return plumbing.NewHash(r.GetRepositoryStatus().SelectedCommitId)
 }
 
-// olderCominCheckout does what Update did before it stopped checking out.
+// olderCominCheckout detaches HEAD at hash and fills the worktree, as an older comin did.
 func olderCominCheckout(t *testing.T, stateDir string, hash plumbing.Hash) {
 	t.Helper()
 	r, err := git.PlainOpen(stateDir)
