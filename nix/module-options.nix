@@ -255,8 +255,10 @@ in {
           An absolute path to a command run before comin activates a
           candidate and on every reconcile tick for each candidate
           comin considers. Exit 0 admits; anything else (nonzero,
-          killed, cannot start, timeout) refuses. The first stdout
-          line is the refusal reason shown by `comin status`.
+          killed, cannot start, timeout) refuses. The refusal reason
+          shown by `comin status` is the first stdout line when it is
+          not empty (cut to 4096 bytes, invalid UTF-8 replaced), else
+          comin's own `preflight: <cause>` line.
           Environment: COMIN_OUT_PATH, COMIN_GIT_SHA, COMIN_GIT_REF
           (<remote>/<branch>), COMIN_GIT_MSG, COMIN_BRANCH
           (`main`|`testing`), COMIN_OPERATION, COMIN_CURRENT_SYSTEM,

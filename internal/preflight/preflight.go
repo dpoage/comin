@@ -26,8 +26,8 @@ type Command struct {
 	Timeout time.Duration
 }
 
-// Verdict is the outcome of Ask. Reason is the first stdout line of the child, or,
-// for a refusal with no output, a "preflight: " line naming the cause. The line is
+// Verdict is the outcome of Ask. Reason is the child's first stdout line; when that
+// line is empty, a refusal gets a "preflight: " line naming the cause. The line is
 // cut to 4096 bytes before invalid UTF-8 becomes U+FFFD, so Reason can exceed 4096 bytes.
 type Verdict struct {
 	Admitted bool

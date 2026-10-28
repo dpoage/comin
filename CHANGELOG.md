@@ -7,8 +7,10 @@
 - `services.comin.preflightCommand`: an absolute path to a command run before
   comin activates a candidate and on every reconcile tick for each candidate
   comin considers. Exit 0 admits the candidate; anything else (nonzero, killed,
-  cannot start, timeout) refuses it. The first stdout line is the refusal reason
-  shown by `comin status`. When this option is null, comin admits every
+  cannot start, timeout) refuses it. The refusal reason shown by
+  `comin status` is the first stdout line when it is not empty (cut to 4096
+  bytes, invalid UTF-8 replaced), else comin's own `preflight: <cause>` line.
+  When this option is null, comin admits every
   candidate and this fork reverts any out-of-band change of the running system
   at the next reconcile tick. Default: null.
 - `services.comin.preflightTimeout`: seconds before comin kills the preflight

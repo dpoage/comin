@@ -112,12 +112,12 @@ every candidate is admitted.
 
 A candidate whose latest finished deployment of the same system failed
 is not deployed again automatically. After a comin restart, comin
-retries once a failure that ended before the restart, unless the
-deployment before it also failed. `comin deployment switch-latest`
-reconciles now: the preflight asks of the pass it starts carry
-`COMIN_TRIGGER=manual`, and the pass retries such a candidate once. The
-command fails when the repository offers no candidate. It returns
-without waiting for that pass.
+retries once a failure that ended before the restart, unless the previous
+finished deployment of the same system also failed. `comin deployment
+switch-latest` reconciles now: the preflight asks of the passes that serve
+the request carry `COMIN_TRIGGER=manual`, and those passes retry such a
+candidate once. The command fails when the repository offers no
+candidate. It returns without waiting for those passes.
 
 A candidate whose evaluation or build failed is evaluated again after a
 completed fetch, whether or not the fetch brought a new commit, and after a
