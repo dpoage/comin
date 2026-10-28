@@ -18,20 +18,22 @@ import (
 const maxCached = 256
 
 // genKey identifies the generation of a candidate: at most one is evaluated
-// per commit and testing flag.
+// per commit and testing flag, and a failed one once more per retryEpoch.
 type genKey struct {
 	commit  string
 	testing bool
 }
 
-// cached is the generation evaluated for a genKey. The store only keeps the
-// generations the builder still references, so gen holds the last value read.
+// cached is the generation evaluated for a genKey, requested in retryEpoch
+// epoch. The store only keeps the generations the builder still references,
+// so gen holds the last value read.
 type cached struct {
 	uuid  string
 	gen   *protobuf.Generation
 	stage reconcile.Stage
 	err   string
 	seq   int
+	epoch uint64
 }
 
 // submission is the deployment handed to the deployer and not yet finished.
@@ -77,8 +79,9 @@ func (m *Manager) abandoned(g *protobuf.Generation) {
 	m.wake()
 }
 
-// reconcileLoop runs a pass at start, then on every wake, trigger and tick.
-// Passes carry the manual trigger until one is decisive.
+// reconcileLoop runs a pass at start, then on every wake, fetch, trigger and
+// tick; passes carry the manual trigger until one is decisive. It alone reads
+// the fetcher's channel; each signal or request moves retryEpoch.
 func (m *Manager) reconcileLoop(ctx context.Context) {
 	ticker := time.NewTicker(m.tick)
 	defer ticker.Stop()
@@ -89,6 +92,12 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 		select {
 		case <-m.triggerCh:
 			manual = true
+			m.retryEpoch++
+		default:
+		}
+		select {
+		case <-m.Fetcher.Fetched():
+			m.retryEpoch++
 		default:
 		}
 		trigger := reconcile.TriggerPoll
@@ -102,21 +111,22 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		case <-m.wakeCh:
+		case <-m.Fetcher.Fetched():
+			m.retryEpoch++
 		case <-m.triggerCh:
 			manual = true
+			m.retryEpoch++
 		}
 	}
 }
 
-// watch is the only reader of the fetcher, builder and confirmer channels.
+// watch is the only reader of the builder and confirmer channels.
 // It records facts and wakes the pass; it never asks the preflight.
 func (m *Manager) watch(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-m.Fetcher.Fetched():
-			m.wake()
 		case <-m.Builder.EvaluationDone:
 			m.wake()
 		case <-m.Builder.BuildDone:
@@ -208,6 +218,7 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 		return obs, nil
 	}
 
+	epoch := m.retryEpoch
 	candidates := repository.Candidates(m.Fetcher.Latest())
 	entries := make([]*cached, len(candidates))
 	for i, c := range candidates {
@@ -216,7 +227,7 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 		if v, ok := verdicts[key]; ok {
 			rc.Verdict = &v
 		}
-		if e := m.cache[key]; e != nil && m.refresh(key, e) {
+		if e := m.cache[key]; e != nil && m.refresh(key, e) && !e.retryDue(epoch) {
 			entries[i] = e
 			rc.Stage, rc.Err, rc.GenerationUuid, rc.OutPath = e.stage, e.err, e.uuid, e.gen.OutPath
 			rc.BuildSubmitted = buildPending == e.uuid
@@ -267,6 +278,12 @@ func (m *Manager) stageOf(g *protobuf.Generation) (reconcile.Stage, string) {
 		return reconcile.Building, ""
 	}
 	return reconcile.AwaitingBuild, ""
+}
+
+// retryDue reports whether e is a failed evaluation or build that the epoch
+// has moved past; the pass then sees the candidate as never evaluated.
+func (e *cached) retryDue(epoch uint64) bool {
+	return (e.stage == reconcile.EvalFailed || e.stage == reconcile.BuildFailed) && e.epoch < epoch
 }
 
 func finished(s reconcile.Stage) bool {
@@ -322,7 +339,7 @@ func (m *Manager) eval(ctx context.Context, c repository.Candidate) {
 		return
 	}
 	m.cacheSeq++
-	m.cache[genKey{c.CommitId, c.Testing}] = &cached{uuid: m.Builder.State().GenerationUuid, seq: m.cacheSeq}
+	m.cache[genKey{c.CommitId, c.Testing}] = &cached{uuid: m.Builder.State().GenerationUuid, seq: m.cacheSeq, epoch: m.retryEpoch}
 	for len(m.cache) > maxCached {
 		var oldest genKey
 		first := true

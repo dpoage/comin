@@ -73,9 +73,11 @@ type Manager struct {
 	wakeCh    chan struct{}
 	triggerCh chan string
 
-	// cache and cacheSeq belong to the pass goroutine.
-	cache    map[genKey]*cached
-	cacheSeq int
+	// cache, cacheSeq and retryEpoch belong to the pass goroutine. A failed
+	// generation is evaluated again once retryEpoch moved past its own.
+	cache      map[genKey]*cached
+	cacheSeq   int
+	retryEpoch uint64
 
 	// mu guards the fields below.
 	mu                sync.Mutex
