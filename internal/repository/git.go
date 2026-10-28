@@ -96,22 +96,6 @@ func getHeadFromRemoteAndBranch(r repository, remoteName, branchName, currentMai
 	return *head, commitObject.Message, nil
 }
 
-func hardReset(r repository, newHead plumbing.Hash) error {
-	var w *git.Worktree
-	w, err := r.Repository.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get the worktree")
-	}
-	err = w.Checkout(&git.CheckoutOptions{
-		Hash:  newHead,
-		Force: true,
-	})
-	if err != nil {
-		return fmt.Errorf("git reset --hard %s fails: '%s'", newHead, err)
-	}
-	return nil
-}
-
 // fetch fetches the config.Remote
 func fetch(r repository, remote types.Remote) (err error) {
 	logrus.Debugf("Fetching remote '%s'", remote.Name)
@@ -175,10 +159,28 @@ func repositoryOpen(config types.GitConfig) (r *git.Repository, err error) {
 			return
 		}
 		logrus.Debugf("The local Git repository located at '%s' has been opened", config.Path)
+		err = unbornHead(r)
 	} else {
 		logrus.Infof("The local Git repository located at '%s' has been initialized", config.Path)
 	}
 	return
+}
+
+// unbornHead points a detached HEAD, left by an older comin's checkout, back to
+// a fresh repository's unborn branch: go-git cannot clone a HEAD no ref names.
+func unbornHead(r *git.Repository) error {
+	head, err := r.Storer.Reference(plumbing.HEAD)
+	if err != nil {
+		return fmt.Errorf("failed to read HEAD: %w", err)
+	}
+	if head.Type() != plumbing.HashReference {
+		return nil
+	}
+	logrus.Infof("repository: HEAD is detached at %s, pointing it to %s", head.Hash(), plumbing.Master)
+	if err := r.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.Master)); err != nil {
+		return fmt.Errorf("failed to point HEAD to %s: %w", plumbing.Master, err)
+	}
+	return nil
 }
 
 func manageRemotes(r *git.Repository, remotes []types.Remote) error {
@@ -223,17 +225,15 @@ func manageRemote(r *git.Repository, remote types.Remote) error {
 	return nil
 }
 
-func headSignedBy(r *git.Repository, publicKeys []string) (signedBy *openpgp.Entity, err error) {
-	head, _ := r.Head()
-	if head == nil {
-		return nil, fmt.Errorf("repository HEAD should not be nil")
-	}
-	signedBy, err = commitSignedBy(r, head.Hash(), publicKeys)
+// selectedCommitSignedBy returns the entity that signed the selected
+// commit with one of publicKeys. It is an error when no key signed it.
+func selectedCommitSignedBy(r *git.Repository, commitId plumbing.Hash, publicKeys []string) (signedBy *openpgp.Entity, err error) {
+	signedBy, err = commitSignedBy(r, commitId, publicKeys)
 	if err != nil {
 		return nil, err
 	}
 	if signedBy == nil {
-		return nil, fmt.Errorf("commit %s is not signed", head.Hash())
+		return nil, fmt.Errorf("commit %s is not signed", commitId)
 	}
 	return signedBy, nil
 }

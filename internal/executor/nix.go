@@ -71,8 +71,12 @@ func cloneRepoToTemp(remoteDir string, commitId string) (string, error) {
 		return "", fmt.Errorf("nix: failed to set reference 'archive' to '%s' in %s: %s", commitId, remoteDir, err)
 	}
 
+	// The clone follows the archive reference, not the HEAD of remoteDir:
+	// comin never checks out in its repository, so that HEAD is unborn.
 	r, err := git.PlainClone(dir, false, &git.CloneOptions{
-		URL: remoteDir,
+		URL:           remoteDir,
+		ReferenceName: branchName,
+		SingleBranch:  true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("nix: failed to clone '%s': %s", dir, err)

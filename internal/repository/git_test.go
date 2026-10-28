@@ -127,7 +127,7 @@ func TestIsAncestor(t *testing.T) {
 	//time.Sleep(100*time.Second)
 }
 
-func TestHeadSignedBy(t *testing.T) {
+func TestSelectedCommitSignedBy(t *testing.T) {
 	dir := t.TempDir()
 	remoteRepository, _ := git.PlainInit(dir, false)
 
@@ -137,16 +137,16 @@ func TestHeadSignedBy(t *testing.T) {
 
 	failPublic, _ := os.ReadFile("./fail.public")
 	testPublic, _ := os.ReadFile("./test.public")
-	signedBy, err := headSignedBy(remoteRepository, []string{string(failPublic), string(testPublic)})
+	signedBy, err := selectedCommitSignedBy(remoteRepository, plumbing.NewHash(HeadCommitId(remoteRepository)), []string{string(failPublic), string(testPublic)})
 	assert.Nil(t, err)
 	assert.Equal(t, "test <test@comin.space>", signedBy.PrimaryIdentity().Name)
 
-	signedBy, err = headSignedBy(remoteRepository, []string{string(failPublic)})
+	signedBy, err = selectedCommitSignedBy(remoteRepository, plumbing.NewHash(HeadCommitId(remoteRepository)), []string{string(failPublic)})
 	assert.ErrorContains(t, err, "is not signed")
 	assert.Nil(t, signedBy)
 
 	_, _ = commitFileAndSign(remoteRepository, dir, "main", "file-2", nil)
-	signedBy, err = headSignedBy(remoteRepository, []string{string(failPublic), string(testPublic)})
+	signedBy, err = selectedCommitSignedBy(remoteRepository, plumbing.NewHash(HeadCommitId(remoteRepository)), []string{string(failPublic), string(testPublic)})
 	assert.ErrorContains(t, err, "is not signed")
 	assert.Nil(t, signedBy)
 

@@ -29,3 +29,12 @@
   configuration file reader rejects every other value with an error naming the
   branch, the option and the reason. Default operations (`switch` on main,
   `test` on testing) are unchanged.
+- comin no longer checks out a commit in its repository after a fetch: a fetch
+  never writes the repository's working tree or `.git/HEAD`, so a concurrent
+  `nix eval git+file://…?rev=…` cannot read a half-written HEAD. The signature
+  verdict `selected_commit_signed*` is the verdict of the selected commit, as
+  before. When comin starts on a repository whose `.git/HEAD` an earlier
+  version left detached at a commit, it points HEAD back to the unborn branch
+  of a fresh repository, once, before its first fetch. The non-flake
+  evaluation then clones the selected commit, with its history, whatever
+  commit an earlier version last checked out.

@@ -255,7 +255,7 @@ func TestCandidates(t *testing.T) {
 }
 
 // TestCandidatesSignatureVerdict asserts each candidate carries the
-// signature verdict of its own commit and not HEAD's.
+// signature verdict of its own commit and not the selected commit's.
 func TestCandidatesSignatureVerdict(t *testing.T) {
 	f, _ := os.Open("./test.private")
 	entityList, _ := openpgp.ReadArmoredKeyRing(f)
@@ -286,7 +286,7 @@ func TestCandidatesSignatureVerdict(t *testing.T) {
 
 		candidates := Candidates(r.GetRepositoryStatus())
 		assert.Equal(t, 2, len(candidates))
-		// The unsigned testing head is selected, so it is HEAD.
+		// The unsigned testing head is selected.
 		assert.False(t, candidates[0].Verified)
 		assert.Equal(t, "", candidates[0].SignedBy)
 		assert.True(t, candidates[1].Verified)
@@ -311,7 +311,7 @@ func TestCandidatesSignatureVerdict(t *testing.T) {
 
 		candidates := Candidates(r.GetRepositoryStatus())
 		assert.Equal(t, 2, len(candidates))
-		// The signed testing head is selected, so it is HEAD.
+		// The signed testing head is selected.
 		assert.True(t, candidates[0].Verified)
 		assert.Equal(t, signedBy, candidates[0].SignedBy)
 		assert.False(t, candidates[1].Verified)
@@ -372,16 +372,9 @@ func newSigningCominRepository(t *testing.T, url string) *repository {
 	return r
 }
 
-// readOnlyWorktree makes the checkout of any new file in r fail.
-func readOnlyWorktree(t *testing.T, r *repository) {
-	t.Helper()
-	assert.Nil(t, os.Chmod(r.GitConfig.Path, 0o555))
-	t.Cleanup(func() { _ = os.Chmod(r.GitConfig.Path, 0o755) })
-}
-
-// Every candidate carries the verdict of its own commit even when Update
-// fails at the checkout.
-func TestCandidatesSignatureVerdictCheckoutFails(t *testing.T) {
+// Every candidate carries the verdict of its own commit, across updates that
+// move the selection.
+func TestCandidatesSignatureVerdictOfEachCommit(t *testing.T) {
 	f, _ := os.Open("./test.private")
 	entityList, _ := openpgp.ReadArmoredKeyRing(f)
 	entity := entityList[0]
@@ -399,9 +392,8 @@ func TestCandidatesSignatureVerdictCheckoutFails(t *testing.T) {
 			assert.True(t, candidates[0].Verified)
 
 			unsigned, _ := commitFile(r1, r1Dir, branch, "file-unsigned")
-			readOnlyWorktree(t, r)
 			r.Fetch([]string{"origin"})
-			assert.NotNil(t, r.Update())
+			assert.Nil(t, r.Update())
 
 			candidates = Candidates(r.GetRepositoryStatus())
 			assert.Equal(t, unsigned, candidates[0].CommitId)
@@ -415,9 +407,8 @@ func TestCandidatesSignatureVerdictCheckoutFails(t *testing.T) {
 			unsigned, _ := commitFile(r1, r1Dir, branch, "file-unsigned")
 
 			r := newSigningCominRepository(t, r1Dir)
-			readOnlyWorktree(t, r)
 			r.Fetch([]string{"origin"})
-			assert.NotNil(t, r.Update())
+			assert.Nil(t, r.Update())
 
 			candidates := Candidates(r.GetRepositoryStatus())
 			assert.Equal(t, unsigned, candidates[0].CommitId)
@@ -477,9 +468,9 @@ func TestCandidatesTestingVerdictOfSelectedCommit(t *testing.T) {
 	assert.Equal(t, "", candidates[0].SignedBy)
 }
 
-// Every checkout since start fails, then testing moves onto main and main
-// disappears: the selected testing head has no verdict of its own.
-func TestCandidatesVerdictWithoutAnySuccessfulCheckout(t *testing.T) {
+// Testing moves onto main and main disappears: nothing is selected anymore
+// and the testing head, still the last selection, has no verdict of its own.
+func TestCandidatesVerdictWithoutSelection(t *testing.T) {
 	for _, withKeys := range []bool{true, false} {
 		r1Dir := t.TempDir()
 		r1, _ := initRemoteRepostiory(r1Dir, true)
@@ -490,9 +481,8 @@ func TestCandidatesVerdictWithoutAnySuccessfulCheckout(t *testing.T) {
 		if withKeys {
 			r = newSigningCominRepository(t, r1Dir)
 		}
-		readOnlyWorktree(t, r)
 		r.Fetch([]string{"origin"})
-		assert.NotNil(t, r.Update())
+		assert.Nil(t, r.Update())
 
 		assert.Nil(t, r1.Storer.SetReference(plumbing.NewHashReference("refs/heads/testing", plumbing.NewHash(cMain))))
 		assert.Nil(t, r1.Storer.RemoveReference(plumbing.NewBranchReferenceName("main")))

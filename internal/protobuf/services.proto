@@ -206,7 +206,7 @@ message RepositoryStatus {
   google.protobuf.BoolValue selected_branch_is_testing = 5;
   google.protobuf.BoolValue selected_commit_signed = 6;
   string selected_commit_signed_by = 7;
-  // True if public keys were available when the commit has been checked out
+  // True if GPG public keys are configured: the selected commit must be signed
   google.protobuf.BoolValue selected_commit_should_be_signed = 8;
   string main_commit_id = 9;
   string main_remote_name = 10;

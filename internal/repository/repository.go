@@ -201,17 +201,16 @@ func (r *repository) Update() error {
 		}
 	}
 
-	if selectedCommitId != "" {
-		r.RepositoryStatus.SelectedCommitId = selectedCommitId
-	}
-
-	if err := hardReset(*r, plumbing.NewHash(selectedCommitId)); err != nil {
+	// Update never writes .git/HEAD: a concurrent `nix eval` reads it.
+	if selectedCommitId == "" {
+		err := fmt.Errorf("no commit is selected")
 		r.RepositoryStatus.ErrorMsg = err.Error()
 		return err
 	}
+	r.RepositoryStatus.SelectedCommitId = selectedCommitId
 
 	if len(r.gpgPubliKeys) > 0 {
-		signedBy, err := headSignedBy(r.Repository, r.gpgPubliKeys)
+		signedBy, err := selectedCommitSignedBy(r.Repository, plumbing.NewHash(selectedCommitId), r.gpgPubliKeys)
 		if err != nil {
 			r.RepositoryStatus.ErrorMsg = err.Error()
 		}
