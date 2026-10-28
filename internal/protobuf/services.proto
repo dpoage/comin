@@ -141,6 +141,58 @@ message State {
   Store store = 6;
   Confirmer build_confirmer = 7;
   Confirmer deploy_confirmer = 8;
+  reserved 9;
+  reserved drift;
+  Reconcile reconcile = 10;
+}
+
+// ReconcileTarget is the candidate a reconcile status names.
+message ReconcileTarget {
+  string commit = 1;
+  // branch is the real branch name, not main or testing
+  string branch = 2;
+  string out_path = 3;
+}
+
+// ReconcileCandidate is one entry of the walk a reconcile status reports.
+message ReconcileCandidate {
+  // branch is the real branch name, not main or testing
+  string branch = 1;
+  // kind is main or testing, the COMIN_BRANCH value of its asks
+  string kind = 2;
+  string commit = 3;
+  // out_path is empty when the candidate was not evaluated
+  string out_path = 4;
+  // outcome is one of admitted, refused, failed, pending or skipped
+  string outcome = 5;
+  // reason is the preflight line of a refusal, comin's line of a failure,
+  // comin's progress line of a pending candidate (evaluating, building or
+  // awaiting build confirmation <sha>; deployment in flight <sha> when it
+  // is not asked because a deployment of <sha> is in flight); empty for
+  // admitted and skipped
+  string reason = 6;
+}
+
+// Reconcile is the convergence of the running system to the repository.
+message Reconcile {
+  // state is one of converged, waiting, deploying or failed
+  string state = 1;
+  // desired is null when the state names no candidate
+  ReconcileTarget desired = 2;
+  // current is empty when it cannot be read
+  string current = 3;
+  // reason is the comin or preflight line; empty when there is nothing to explain
+  string reason = 4;
+  // since is when this process first observed the state value
+  google.protobuf.Timestamp since = 5;
+  // candidates is the current pass's walk, in preference order; empty
+  // while suspended or when there is no candidate
+  repeated ReconcileCandidate candidates = 6;
+  // observed_at is when the pass that produced this status started, on
+  // the host clock; that pass read every input after it. With T a host
+  // time taken after a change took effect, observed_at > T shows a pass
+  // that read every input after T. Null before the first pass.
+  google.protobuf.Timestamp observed_at = 7;
 }
 
 message Deployer {
