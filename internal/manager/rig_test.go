@@ -173,8 +173,6 @@ type rigOpts struct {
 	manual    bool
 	autoDelay time.Duration
 	tick      time.Duration
-	// beforeTriggerRead is the manager's hook of the same name.
-	beforeTriggerRead func()
 }
 
 type rig struct {
@@ -412,7 +410,6 @@ func (r *rig) start() {
 	r.m = New(st, prometheus.New(), scheduler.New(), f, b, d, "", r.exec, bc, dc, bk, ops, cmd)
 	r.m.tick = r.opts.tick
 	r.m.exit = func(code int) { r.exits <- code }
-	r.m.beforeTriggerRead = r.opts.beforeTriggerRead
 	go r.m.Run(ctx)
 	r.fetch()
 	// The state directory is removed after the fetch worker, which ignores ctx, is done.

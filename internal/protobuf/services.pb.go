@@ -964,10 +964,9 @@ type Reconcile struct {
 	// while suspended or when there is no candidate
 	Candidates []*ReconcileCandidate `protobuf:"bytes,6,rep,name=candidates" json:"candidates,omitempty"`
 	// observed_at is when the pass that produced this status started, on
-	// the host clock; that pass read every input after it. A waiter notes
-	// the host time T once its change has taken effect (the preflight's
-	// input written, switch-latest returned) and waits for observed_at > T.
-	// Null before the first pass.
+	// the host clock; that pass read every input after it. With T a host
+	// time taken after a change took effect, observed_at > T shows a pass
+	// that read every input after T. Null before the first pass.
 	ObservedAt    *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=observed_at,json=observedAt" json:"observed_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

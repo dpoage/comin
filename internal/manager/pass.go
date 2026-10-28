@@ -86,9 +86,6 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 	for {
 		// A request that reached comin before the stamp is served by this pass.
 		started := time.Now()
-		if m.beforeTriggerRead != nil {
-			m.beforeTriggerRead()
-		}
 		select {
 		case <-m.triggerCh:
 			manual = true

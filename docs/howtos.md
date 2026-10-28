@@ -117,13 +117,11 @@ preflight asks of the pass it starts carry `COMIN_TRIGGER=manual`, and it
 retries such a candidate once. It fails when the repository offers no
 candidate, and it returns without waiting for that pass.
 
-`comin status` reports the outcome of the last reconcile pass in its
-`reconcile` object. Its `observed_at` is when that pass started, on the
-host clock, and that pass read all its inputs after that time. To see the
-outcome of a change, note the host time once the change has taken effect
-(the input of the preflight command written, `comin deployment
-switch-latest` returned), then wait for a status whose `observed_at` is
-later.
+`comin status` reports the last reconcile pass in its `reconcile`
+object. Its `observed_at` is when that pass started, on the host clock,
+and that pass read all its inputs after that time. Take a host time T
+after a change took effect: a status whose `observed_at` is later than T
+comes from a pass that read every input after T.
 
 **Fork behaviour**: when `services.comin.preflightCommand` is `null`,
 comin reverts a change made outside of comin (`nixos-rebuild`, a
