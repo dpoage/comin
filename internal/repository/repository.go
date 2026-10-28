@@ -201,10 +201,7 @@ func (r *repository) Update() error {
 		}
 	}
 
-	// Update never checks anything out: nothing reads the repository's
-	// working tree or HEAD (evaluation addresses the selected commit by id),
-	// and rewriting .git/HEAD on every fetch let a concurrent `nix eval`
-	// read it torn.
+	// Update never writes .git/HEAD: a concurrent `nix eval` reads it.
 	if selectedCommitId == "" {
 		err := fmt.Errorf("no commit is selected")
 		r.RepositoryStatus.ErrorMsg = err.Error()

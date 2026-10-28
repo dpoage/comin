@@ -33,5 +33,6 @@
   never writes the repository's working tree or `.git/HEAD`, so a concurrent
   `nix eval git+file://…?rev=…` cannot read a half-written HEAD. The signature
   verdict `selected_commit_signed*` is the verdict of the selected commit, as
-  before. The non-flake evaluation clones the selected commit from the `archive`
-  reference instead of the repository's HEAD.
+  before. The non-flake evaluation copies the selected commit out of the
+  repository instead of cloning it, so it no longer fails when the repository's
+  HEAD is detached at a commit no branch names, as an older comin could leave it.

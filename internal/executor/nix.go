@@ -8,6 +8,9 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 	"github.com/nlewo/comin/internal/utils"
 	"github.com/sirupsen/logrus"
 )
@@ -52,45 +55,87 @@ func (n *NixLocal) Deploy(ctx context.Context, outPath, operation string) (needT
 	return deployLinux(ctx, outPath, operation)
 }
 
+// cloneRepoToTemp copies commitId and its tree, without a git transport: a
+// go-git clone fails when the source HEAD is detached at a commit no ref names.
 func cloneRepoToTemp(remoteDir string, commitId string) (string, error) {
 	dir, err := os.MkdirTemp("", "comin-git-clone-*")
 	if err != nil {
 		return "", err
 	}
-	logrus.Debugf("nix: cloning %s into temporary directory '%s'", remoteDir, dir)
+	logrus.Debugf("nix: copying the commit '%s' of %s into the temporary directory '%s'", commitId, remoteDir, dir)
 	remoteRepo, err := git.PlainOpen(remoteDir)
 	if err != nil {
 		return "", fmt.Errorf("nix: failed to open the repository '%s': %s", remoteDir, err)
 	}
-
-	// We need to create this reference otherwise the checkout fails with "object not found".
-	branchName := plumbing.NewBranchReferenceName("archive")
-	ref := plumbing.NewHashReference(branchName, plumbing.NewHash(commitId))
-	err = remoteRepo.Storer.SetReference(ref)
+	hash := plumbing.NewHash(commitId)
+	commit, err := remoteRepo.CommitObject(hash)
 	if err != nil {
-		return "", fmt.Errorf("nix: failed to set reference 'archive' to '%s' in %s: %s", commitId, remoteDir, err)
+		return "", fmt.Errorf("nix: failed to read the commit '%s' in '%s': %s", commitId, remoteDir, err)
 	}
-
-	// The clone follows the archive reference, not the HEAD of remoteDir:
-	// comin never checks out in its repository, so that HEAD is unborn.
-	r, err := git.PlainClone(dir, false, &git.CloneOptions{
-		URL:           remoteDir,
-		ReferenceName: branchName,
-		SingleBranch:  true,
-	})
+	r, err := git.PlainInit(dir, false)
 	if err != nil {
-		return "", fmt.Errorf("nix: failed to clone '%s': %s", dir, err)
+		return "", fmt.Errorf("nix: failed to init a repository in '%s': %s", dir, err)
+	}
+	if err := copyObject(remoteRepo.Storer, r.Storer, hash); err != nil {
+		return "", fmt.Errorf("nix: failed to copy the commit '%s' into '%s': %s", commitId, dir, err)
+	}
+	if err := copyTree(remoteRepo.Storer, r.Storer, commit.TreeHash, map[plumbing.Hash]bool{}); err != nil {
+		return "", fmt.Errorf("nix: failed to copy the tree of the commit '%s' into '%s': %s", commitId, dir, err)
+	}
+	// The parents are not copied.
+	if err := r.Storer.SetShallow([]plumbing.Hash{hash}); err != nil {
+		return "", fmt.Errorf("nix: failed to mark '%s' as shallow: %s", dir, err)
 	}
 	w, err := r.Worktree()
 	if err != nil {
 		return "", err
 	}
 	err = w.Checkout(&git.CheckoutOptions{
-		Hash:  plumbing.NewHash(commitId),
+		Hash:  hash,
 		Force: true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("nix: failed to checkout the commit '%s' in '%s': %s", commitId, dir, err)
 	}
 	return dir, nil
+}
+
+func copyObject(src, dst storer.EncodedObjectStorer, hash plumbing.Hash) error {
+	o, err := src.EncodedObject(plumbing.AnyObject, hash)
+	if err != nil {
+		return err
+	}
+	_, err = dst.SetEncodedObject(o)
+	return err
+}
+
+// copyTree copies the tree hash with its subtrees and blobs. Submodule
+// commits are not in the repository, so they are skipped.
+func copyTree(src, dst storer.EncodedObjectStorer, hash plumbing.Hash, copied map[plumbing.Hash]bool) error {
+	if copied[hash] {
+		return nil
+	}
+	copied[hash] = true
+	tree, err := object.GetTree(src, hash)
+	if err != nil {
+		return err
+	}
+	if err := copyObject(src, dst, hash); err != nil {
+		return err
+	}
+	for _, e := range tree.Entries {
+		switch {
+		case e.Mode == filemode.Submodule:
+		case e.Mode == filemode.Dir:
+			if err := copyTree(src, dst, e.Hash, copied); err != nil {
+				return err
+			}
+		case !copied[e.Hash]:
+			copied[e.Hash] = true
+			if err := copyObject(src, dst, e.Hash); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

@@ -255,7 +255,7 @@ func TestCandidates(t *testing.T) {
 }
 
 // TestCandidatesSignatureVerdict asserts each candidate carries the
-// signature verdict of its own commit and not HEAD's.
+// signature verdict of its own commit and not the selected commit's.
 func TestCandidatesSignatureVerdict(t *testing.T) {
 	f, _ := os.Open("./test.private")
 	entityList, _ := openpgp.ReadArmoredKeyRing(f)
@@ -286,7 +286,7 @@ func TestCandidatesSignatureVerdict(t *testing.T) {
 
 		candidates := Candidates(r.GetRepositoryStatus())
 		assert.Equal(t, 2, len(candidates))
-		// The unsigned testing head is selected, so it is HEAD.
+		// The unsigned testing head is selected.
 		assert.False(t, candidates[0].Verified)
 		assert.Equal(t, "", candidates[0].SignedBy)
 		assert.True(t, candidates[1].Verified)
@@ -311,7 +311,7 @@ func TestCandidatesSignatureVerdict(t *testing.T) {
 
 		candidates := Candidates(r.GetRepositoryStatus())
 		assert.Equal(t, 2, len(candidates))
-		// The signed testing head is selected, so it is HEAD.
+		// The signed testing head is selected.
 		assert.True(t, candidates[0].Verified)
 		assert.Equal(t, signedBy, candidates[0].SignedBy)
 		assert.False(t, candidates[1].Verified)

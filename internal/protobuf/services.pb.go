@@ -1283,7 +1283,7 @@ type RepositoryStatus struct {
 	SelectedBranchIsTesting *wrapperspb.BoolValue `protobuf:"bytes,5,opt,name=selected_branch_is_testing,json=selectedBranchIsTesting" json:"selected_branch_is_testing,omitempty"`
 	SelectedCommitSigned    *wrapperspb.BoolValue `protobuf:"bytes,6,opt,name=selected_commit_signed,json=selectedCommitSigned" json:"selected_commit_signed,omitempty"`
 	SelectedCommitSignedBy  string                `protobuf:"bytes,7,opt,name=selected_commit_signed_by,json=selectedCommitSignedBy" json:"selected_commit_signed_by,omitempty"`
-	// True if public keys were available when the commit has been checked out
+	// True if GPG public keys are configured: the selected commit must be signed
 	SelectedCommitShouldBeSigned *wrapperspb.BoolValue `protobuf:"bytes,8,opt,name=selected_commit_should_be_signed,json=selectedCommitShouldBeSigned" json:"selected_commit_should_be_signed,omitempty"`
 	MainCommitId                 string                `protobuf:"bytes,9,opt,name=main_commit_id,json=mainCommitId" json:"main_commit_id,omitempty"`
 	MainRemoteName               string                `protobuf:"bytes,10,opt,name=main_remote_name,json=mainRemoteName" json:"main_remote_name,omitempty"`
