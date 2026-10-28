@@ -18,7 +18,9 @@
   `state` (`converged`, `waiting`, `deploying` or `failed`), `desired`
   (commit, branch, out path), `current`, `reason` (the preflight line or
   the comin line explaining the state), `since` (when this process first
-  observed the state value) and `candidates`, the current walk in
+  observed the state value), `observed_at` (when the reconcile pass that
+  produced the object started, on the host clock; null before the first
+  pass) and `candidates`, the current walk in
   preference order with one entry per candidate: branch, kind
   (`main`/`testing`), commit, out path, outcome (`admitted`, `refused`,
   `failed`, `pending` or `skipped`) and reason. `comin status` and

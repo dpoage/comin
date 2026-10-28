@@ -77,5 +77,5 @@ func TestJSONStatusReconcileArtifact(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	assert.Equal(t, []string{"candidates", "current", "desired", "reason", "since", "state"}, keys)
+	assert.Equal(t, []string{"candidates", "current", "desired", "observed_at", "reason", "since", "state"}, keys)
 }

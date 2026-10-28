@@ -147,6 +147,9 @@ func (m *Manager) toState() *protobuf.State {
 		Reason:  snap.status.Reason,
 		Since:   timestamppb.New(snap.since),
 	}
+	if !snap.observedAt.IsZero() {
+		rc.ObservedAt = timestamppb.New(snap.observedAt)
+	}
 	for _, c := range snap.status.Candidates {
 		rc.Candidates = append(rc.Candidates, &protobuf.ReconcileCandidate{
 			Branch:  c.Branch,

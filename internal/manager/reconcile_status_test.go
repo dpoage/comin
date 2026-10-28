@@ -89,7 +89,7 @@ func TestStatusArtifact(t *testing.T) {
 
 	// The testing head is refused: main is deployed and converged.
 	v := waitState(t, r, "converged")
-	assert.Equal(t, []string{"candidates", "current", "desired", "reason", "since", "state"}, reconcileKeys(t, v))
+	assert.Equal(t, []string{"candidates", "current", "desired", "observed_at", "reason", "since", "state"}, reconcileKeys(t, v))
 	_, drift := v["drift"]
 	assert.False(t, drift, "drift must be gone")
 	assert.Equal(t, "", reconcileField(t, v, "reason"))

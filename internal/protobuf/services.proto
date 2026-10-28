@@ -188,6 +188,10 @@ message Reconcile {
   // candidates is the current pass's walk, in preference order; empty
   // while suspended or when there is no candidate
   repeated ReconcileCandidate candidates = 6;
+  // observed_at is when the pass that produced this status started, on
+  // the host clock: every input of that pass was read after it. Null
+  // before the first pass.
+  google.protobuf.Timestamp observed_at = 7;
 }
 
 message Deployer {

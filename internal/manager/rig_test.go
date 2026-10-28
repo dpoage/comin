@@ -235,9 +235,15 @@ if [ -e "$d/slow" ]; then
   [ "$(wc -l < "$d/asks.log")" -ge "$from" ] && sleep "$secs"
 fi
 v=$(cat "$d/verdict-$COMIN_BRANCH" 2>/dev/null)
-if [ "$v" = refuse ]; then echo "refused: $COMIN_BRANCH"; exit 1; fi
-if [ "$v" = manual ] && [ "$COMIN_TRIGGER" != manual ]; then echo "refused: $COMIN_BRANCH"; exit 1; fi
-exit 0
+rc=0
+if [ "$v" = refuse ]; then echo "refused: $COMIN_BRANCH"; rc=1; fi
+if [ "$v" = manual ] && [ "$COMIN_TRIGGER" != manual ]; then echo "refused: $COMIN_BRANCH"; rc=1; fi
+if [ -e "$d/late" ]; then
+  read secs < "$d/late"
+  echo "$COMIN_BRANCH" >> "$d/late.log"
+  sleep "$secs"
+fi
+exit $rc
 `, r.scriptDir)
 	require.NoError(r.t, os.WriteFile(filepath.Join(r.scriptDir, "preflight.sh"), []byte(body), 0o755))
 }
@@ -272,6 +278,23 @@ func (r *rig) slowAsks(d time.Duration, from int) {
 	require.NoError(r.t, os.WriteFile(tmp, fmt.Appendf(nil, "%g %d\n", d.Seconds(), from), 0o644))
 	require.NoError(r.t, os.Rename(tmp, p))
 }
+
+// lateAsks holds every ask d after it read its verdict, once it logged
+// its branch to late.log; d == 0 ends the hold.
+func (r *rig) lateAsks(d time.Duration) {
+	r.t.Helper()
+	p := filepath.Join(r.scriptDir, "late")
+	if d == 0 {
+		_ = os.Remove(p)
+		return
+	}
+	tmp := p + ".tmp"
+	require.NoError(r.t, os.WriteFile(tmp, fmt.Appendf(nil, "%g\n", d.Seconds()), 0o644))
+	require.NoError(r.t, os.Rename(tmp, p))
+}
+
+// lateReads is the number of held asks that read their verdict.
+func (r *rig) lateReads() int { return countLines(filepath.Join(r.scriptDir, "late.log")) }
 
 func (r *rig) asks() []ask {
 	b, _ := os.ReadFile(r.exec.askLog)

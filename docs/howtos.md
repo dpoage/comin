@@ -115,7 +115,13 @@ is not deployed again automatically, except once after a comin restart
 interrupted it. `comin deployment switch-latest` reconciles now: the
 preflight asks of the pass it starts carry `COMIN_TRIGGER=manual`, and it
 retries such a candidate once. It fails when the repository offers no
-candidate.
+candidate, and it returns without waiting for that pass.
+
+`comin status` reports the outcome of the last reconcile pass in its
+`reconcile` object. Its `observed_at` is when that pass started, on the
+host clock: to see the outcome of a change (a verdict of the preflight
+command, `comin deployment switch-latest`), note the host time before
+making it and wait for a status whose `observed_at` is later.
 
 **Fork behaviour**: when `services.comin.preflightCommand` is `null`,
 comin reverts a change made outside of comin (`nixos-rebuild`, a

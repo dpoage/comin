@@ -42,11 +42,13 @@ type submission struct {
 }
 
 // statusSnapshot is the last pass's status with the running system it was
-// computed against and when its state value was first observed.
+// computed against, when its state value was first observed and when the
+// pass started (zero before the first pass).
 type statusSnapshot struct {
-	status  reconcile.Status
-	current string
-	since   time.Time
+	status     reconcile.Status
+	current    string
+	since      time.Time
+	observedAt time.Time
 }
 
 func (m *Manager) wake() {
@@ -145,6 +147,8 @@ func (m *Manager) watch(ctx context.Context) {
 // verdicts of its asks live for the pass only. A step holds passMu from
 // observe through apply; asks run without it.
 func (m *Manager) pass(ctx context.Context, trigger string) reconcile.Decision {
+	// Every input of the pass is read after its start.
+	started := time.Now()
 	verdicts := map[genKey]preflight.Verdict{}
 	for ctx.Err() == nil {
 		m.passMu.Lock()
@@ -152,7 +156,7 @@ func (m *Manager) pass(ctx context.Context, trigger string) reconcile.Decision {
 		d := reconcile.Decide(obs)
 		if d.Action != reconcile.Ask {
 			m.apply(ctx, obs, entries, d)
-			m.recordStatus(obs.Current, d.Status)
+			m.recordStatus(started, obs.Current, d.Status)
 			m.passMu.Unlock()
 			return d
 		}
@@ -165,17 +169,18 @@ func (m *Manager) pass(ctx context.Context, trigger string) reconcile.Decision {
 	return reconcile.Decision{}
 }
 
-// recordStatus keeps the last pass's status; since advances only when the
-// state value changed.
-func (m *Manager) recordStatus(current string, st reconcile.Status) {
+// recordStatus keeps the last pass's status and its start; since advances
+// only when the state value changed.
+func (m *Manager) recordStatus(started time.Time, current string, st reconcile.Status) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if st.State != m.reconcileSnapshot.status.State {
-		m.reconcileSnapshot = statusSnapshot{status: st, current: current, since: time.Now()}
+		m.reconcileSnapshot = statusSnapshot{status: st, current: current, since: time.Now(), observedAt: started}
 		return
 	}
 	m.reconcileSnapshot.status = st
 	m.reconcileSnapshot.current = current
+	m.reconcileSnapshot.observedAt = started
 }
 
 // observe gathers one Observation. While suspended it walks no candidate,
