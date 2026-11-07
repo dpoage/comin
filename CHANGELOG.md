@@ -37,8 +37,9 @@
   evaluation, build, ask or deployment step (status `waiting`, reason
   `sync gate: <line>`), ends a `comin deployment switch-latest` request, and,
   like a closed `watch`, stops a running evaluation or build without failing
-  it; the candidate is evaluated again at the first open pass. A deployment
-  already handed to the deployer is not interrupted. When this option is null
+  it; the candidate is built again (evaluated again when its evaluation was
+  stopped) at the first open pass. A deployment already handed to the
+  deployer is not interrupted. When this option is null
   comin has no gate. Default: null.
 - `services.comin.syncGateTimeout`: seconds before comin kills a sync gate
   run and counts it as closed. Default: 30.
@@ -46,7 +47,8 @@
 - The `manual` object in the `reconcile` object of `comin status --json`:
   the last `comin deployment switch-latest` request's `requested_at`,
   `ended_at` (null while it waits for its decisive pass), `state` and
-  `reason`. It is kept in memory only; the state file is unchanged.
+  `reason`. It is absent until the first request since comin started, and
+  kept in memory only; the state file is unchanged.
 
 ### Removed
 

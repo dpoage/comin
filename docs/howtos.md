@@ -155,11 +155,13 @@ takes no evaluation, build, ask or deployment step: the status is
 `waiting` with the reason `sync gate: <first stdout line>`, and a
 `switch-latest` request that meets it ends there. A closed `pass` or
 `watch` stops a running evaluation or build without failing it, and the
-candidate is evaluated again at the first open pass. A deployment already
+candidate is built again (evaluated again when its evaluation was stopped)
+at the first open pass. A deployment already
 handed to the deployer is not interrupted. The `reconcile.manual` object
 of `comin status --json` reports the last `switch-latest` request:
 `requested_at`, `ended_at` (null while it waits), `state` and `reason`.
-It is not persisted.
+It is absent until the first request since comin started, and it is not
+persisted.
 
 **Fork behaviour**: when `services.comin.preflightCommand` is `null`,
 comin reverts a change made outside of comin (`nixos-rebuild`, a

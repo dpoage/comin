@@ -292,8 +292,9 @@ in {
           fetch is skipped without a fetch error. A closed pass takes
           no evaluation, build, ask or deployment step, and a closed
           `pass` or `watch` stops a running evaluation or build
-          without failing it; the candidate is evaluated again at the
-          first open pass. A deployment already started is not
+          without failing it; the candidate is built again (evaluated
+          again when its evaluation was stopped) at the first open
+          pass. A deployment already started is not
           interrupted. When null, comin has no gate.
         '';
         type = nullOr path;
