@@ -61,9 +61,12 @@ type fakeExec struct {
 	buildErr  func(drv string, attempt int) error
 	evalHold  time.Duration
 	buildTrys map[string]int
+
+	// evalCtxHold delays each evaluation until cancelled.
+	evalCtxHold time.Duration
 }
 
-func (e *fakeExec) Eval(_ context.Context, _, _, commitId, _, _ string) (string, string, string, error) {
+func (e *fakeExec) Eval(ctx context.Context, _, _, commitId, _, _ string) (string, string, string, error) {
 	e.mu.Lock()
 	e.evals = append(e.evals, commitId)
 	attempt := 0
@@ -72,10 +75,17 @@ func (e *fakeExec) Eval(_ context.Context, _, _, commitId, _, _ string) (string,
 			attempt++
 		}
 	}
-	failure, hold := e.evalErr, e.evalHold
+	failure, hold, ctxHold := e.evalErr, e.evalHold, e.evalCtxHold
 	e.mu.Unlock()
 	if hold > 0 {
 		time.Sleep(hold)
+	}
+	if ctxHold > 0 {
+		select {
+		case <-time.After(ctxHold):
+		case <-ctx.Done():
+			return "", "", "", ctx.Err()
+		}
 	}
 	if failure != nil {
 		if err := failure(commitId, attempt); err != nil {
@@ -206,6 +216,12 @@ type rigOpts struct {
 	// manualBuild makes the build confirmer wait for Confirm.
 	manualBuild bool
 	tick        time.Duration
+	// gate configures the sync gate script of the rig (see gate_rig_test.go);
+	// watchPeriod overrides the period of its checks while a build runs.
+	gate        bool
+	gatePath    string
+	gateTimeout time.Duration
+	watchPeriod time.Duration
 }
 
 type rig struct {
@@ -436,7 +452,7 @@ func (r *rig) start() {
 	}
 	repo, err := repository.New(gitConfig, mainCommitId, prometheus.New())
 	require.NoError(t, err)
-	f := fetcher.NewFetcher(repo)
+	f := fetcher.NewFetcher(repo, r.fetcherOpts()...)
 	f.Start(ctx)
 	b := builder.New(st, r.exec, gitConfig.Path, "", "", "my-machine", time.Minute, time.Minute)
 	d := deployer.New(st, r.exec.Deploy, last, "")
@@ -459,8 +475,11 @@ func (r *rig) start() {
 		cmd = preflight.Command{Path: filepath.Join(r.scriptDir, "preflight.sh"), Timeout: 30 * time.Second}
 	}
 	ops := ConfigurationOperations{"origin": {"main": "switch", "testing": "test"}}
-	r.m = New(st, prometheus.New(), scheduler.New(), f, b, d, "", r.exec, bc, dc, bk, ops, cmd)
+	r.m = New(st, prometheus.New(), scheduler.New(), f, b, d, "", r.exec, bc, dc, bk, ops, cmd, r.managerOpts()...)
 	r.m.tick = r.opts.tick
+	if r.opts.watchPeriod != 0 {
+		r.m.watchPeriod = r.opts.watchPeriod
+	}
 	r.m.exit = func(code int) { r.exits <- code }
 	go r.m.Run(ctx)
 	r.fetch()

@@ -30,6 +30,9 @@ const (
 // ReasonNoCandidate is the reason of a walk over no candidate.
 const ReasonNoCandidate = "no candidate"
 
+// ReasonSyncGate prefixes the reason of a pass held by a closed sync gate.
+const ReasonSyncGate = "sync gate: "
+
 // Stage is how far the generation of a candidate has progressed.
 type Stage int
 
@@ -132,6 +135,14 @@ type Observation struct {
 	AsksRun       bool
 	DeployConfirm DeployConfirm
 	Trigger       string
+	// SyncGateClosed is the closed answer of the sync gate asked at the start
+	// of the pass; nil when no gate is configured or it is open.
+	SyncGateClosed *SyncGateClosed
+}
+
+// SyncGateClosed is a closed answer of the sync gate.
+type SyncGateClosed struct {
+	Reason string
 }
 
 type Action int
@@ -187,6 +198,10 @@ func Decide(o Observation) Decision {
 func decide(o Observation) Decision {
 	if o.Suspended {
 		return waiting(Status{State: StateWaiting, Reason: "suspended"})
+	}
+	if o.SyncGateClosed != nil {
+		// The pass takes no action; a manual request meeting it ends.
+		return Decision{Action: Wait, Target: -1, Status: Status{State: StateWaiting, Reason: ReasonSyncGate + o.SyncGateClosed.Reason}, Decisive: true}
 	}
 	var firstFailed, firstRefused *Candidate
 	var entries []CandidateStatus

@@ -55,6 +55,13 @@ type Confirmer struct {
 	AutoDuration int    `yaml:"auto_duration"`
 }
 
+type SyncGate struct {
+	// Command is the absolute path of the gate command.
+	Command string `yaml:"command"`
+	// Timeout bounds one gate run in seconds.
+	Timeout int `yaml:"timeout"`
+}
+
 type Configuration struct {
 	Hostname      string `yaml:"hostname"`
 	StateDir      string `yaml:"state_dir"`
@@ -76,4 +83,7 @@ type Configuration struct {
 	PreflightTimeout int       `yaml:"preflight_timeout"`
 	BuildConfirmer   Confirmer `yaml:"build_confirmer"`
 	DeployConfirmer  Confirmer `yaml:"deploy_confirmer"`
+	// SyncGate gates fetches, evaluations, builds and deployments. An empty
+	// command means no gate.
+	SyncGate SyncGate `yaml:"sync_gate"`
 }

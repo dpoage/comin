@@ -277,6 +277,36 @@ in {
         type = types.ints.positive;
         default = 60;
       };
+      syncGateCommand = mkOption {
+        description = ''
+          An absolute path to a command that tells comin whether it
+          may fetch, evaluate, build and deploy now. Exit 0 means
+          open; anything else (nonzero, killed, cannot start,
+          timeout) means closed. The reason shown by `comin status` is
+          `sync gate: <first stdout line>`, else a line naming the
+          failure. Environment: COMIN_TRIGGER (`poll`|`manual`; manual
+          serves `comin deployment switch-latest` and `comin fetch`)
+          and COMIN_SYNC_STAGE: `fetch` before every fetch, `pass`
+          at the start of every reconcile pass, `watch` every 2
+          seconds while an evaluation or a build runs. A closed
+          fetch is skipped without a fetch error. A closed pass takes
+          no evaluation, build, ask or deployment step, and a closed
+          `pass` or `watch` stops a running evaluation or build
+          without failing it; the candidate is evaluated again at the
+          first open pass. A deployment already started is not
+          interrupted. When null, comin has no gate.
+        '';
+        type = nullOr path;
+        default = null;
+      };
+      syncGateTimeout = mkOption {
+        description = ''
+          Seconds before comin kills a sync gate run (its process
+          group) and counts it as closed.
+        '';
+        type = types.ints.positive;
+        default = 30;
+      };
       buildConfirmer = mkOption {
         description = "The confirmer options for the build.";
         default = {};

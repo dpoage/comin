@@ -24,6 +24,13 @@ in rec {
   ) // (
     lib.optionalAttrs (cfg.services.comin.preflightCommand != null)
       { preflight_command = cfg.services.comin.preflightCommand; }
+  ) // (
+    lib.optionalAttrs (cfg.services.comin.syncGateCommand != null)
+      { sync_gate = {
+          command = cfg.services.comin.syncGateCommand;
+          timeout = cfg.services.comin.syncGateTimeout;
+        };
+      }
   );
   cominConfigYaml = yaml.generate "comin.yaml" cominConfig;
 }

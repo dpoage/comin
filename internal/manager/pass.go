@@ -156,13 +156,15 @@ func (m *Manager) watch(ctx context.Context) {
 // started precedes every read of the pass's inputs.
 func (m *Manager) pass(ctx context.Context, started time.Time, trigger string) reconcile.Decision {
 	verdicts := map[genKey]preflight.Verdict{}
+	gate := m.passGate(ctx, trigger)
 	for ctx.Err() == nil {
 		m.passMu.Lock()
-		obs, entries := m.observe(trigger, verdicts)
+		obs, entries := m.observe(trigger, verdicts, gate)
 		d := reconcile.Decide(obs)
 		if d.Action != reconcile.Ask {
 			m.apply(ctx, obs, entries, d)
 			m.recordStatus(started, obs.Current, d.Status)
+			m.recordManual(started, trigger, d)
 			m.passMu.Unlock()
 			return d
 		}
@@ -189,9 +191,9 @@ func (m *Manager) recordStatus(started time.Time, current string, st reconcile.S
 	m.reconcileSnapshot.observedAt = started
 }
 
-// observe gathers one Observation. While suspended it walks no candidate,
-// so a build the suspension cancelled is never read.
-func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict) (reconcile.Observation, []*cached) {
+// observe gathers one Observation. While suspended or held by a closed sync
+// gate it walks no candidate, so a build the suspension cancelled is never read.
+func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict, gate *reconcile.SyncGateClosed) (reconcile.Observation, []*cached) {
 	current, currentErr := m.currentSystem()
 	m.mu.Lock()
 	var inFlightTarget *reconcile.Target
@@ -213,8 +215,9 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 	obs.ProcessStartedAt = m.startedAt
 	obs.AsksRun = m.preflight.Path != ""
 	obs.Trigger = trigger
+	obs.SyncGateClosed = gate
 	obs.Deployments = m.storage.DeploymentList()
-	if obs.Suspended {
+	if obs.Suspended || gate != nil {
 		return obs, nil
 	}
 
@@ -250,6 +253,11 @@ func (m *Manager) observe(trigger string, verdicts map[genKey]preflight.Verdict)
 // returns false, when the store lost a generation that was not finished.
 func (m *Manager) refresh(key genKey, e *cached) bool {
 	g, err := m.storage.GenerationGet(e.uuid)
+	if err == nil && g.EvalStatus == store.EvalInit.String() {
+		// The sync gate stopped its evaluation: it is evaluated again.
+		delete(m.cache, key)
+		return false
+	}
 	if err == nil {
 		e.gen = &g
 	} else if e.gen == nil || !finished(e.stage) {

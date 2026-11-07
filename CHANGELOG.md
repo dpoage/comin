@@ -27,6 +27,26 @@
   (`main`/`testing`), commit, out path, outcome (`admitted`, `refused`,
   `failed`, `pending` or `skipped`) and reason. `comin status` and
   `comin status --oneline` show the reconcile state and its reason.
+- `services.comin.syncGateCommand`: an absolute path to a command that tells
+  comin whether it may fetch, evaluate, build and deploy now. comin runs it
+  with `COMIN_TRIGGER` (`poll` or `manual`) and `COMIN_SYNC_STAGE`: `fetch`
+  before every fetch, `pass` at the start of every reconcile pass and `watch`
+  every 2 seconds while an evaluation or a build runs. Exit 0 is open; any
+  other outcome is closed, with the first stdout line as the reason. A closed
+  `fetch` is skipped without a fetch error. A closed `pass` takes no
+  evaluation, build, ask or deployment step (status `waiting`, reason
+  `sync gate: <line>`), ends a `comin deployment switch-latest` request, and,
+  like a closed `watch`, stops a running evaluation or build without failing
+  it; the candidate is evaluated again at the first open pass. A deployment
+  already handed to the deployer is not interrupted. When this option is null
+  comin has no gate. Default: null.
+- `services.comin.syncGateTimeout`: seconds before comin kills a sync gate
+  run and counts it as closed. Default: 30.
+- The configuration file key `sync_gate` with `command` and `timeout`.
+- The `manual` object in the `reconcile` object of `comin status --json`:
+  the last `comin deployment switch-latest` request's `requested_at`,
+  `ended_at` (null while it waits for its decisive pass), `state` and
+  `reason`. It is kept in memory only; the state file is unchanged.
 
 ### Removed
 

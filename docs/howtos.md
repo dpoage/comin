@@ -143,6 +143,24 @@ and that pass read all its inputs after that time. Take a host time T
 after a change took effect: a status whose `observed_at` is later than T
 comes from a pass that read every input after T.
 
+`services.comin.syncGateCommand` gates when comin works at all. comin
+runs it before every fetch (`COMIN_SYNC_STAGE=fetch`), at the start of
+every pass (`pass`) and every 2 seconds while an evaluation or build
+runs (`watch`); `COMIN_TRIGGER` is `manual` for `comin fetch`, for the
+passes that serve `comin deployment switch-latest` and for the checks of
+a build that serves such a request, else `poll`. Exit 0 is open; a
+nonzero exit, a timeout or a command that cannot start is closed. A
+closed `fetch` skips that fetch without a fetch error. A closed `pass`
+takes no evaluation, build, ask or deployment step: the status is
+`waiting` with the reason `sync gate: <first stdout line>`, and a
+`switch-latest` request that meets it ends there. A closed `pass` or
+`watch` stops a running evaluation or build without failing it, and the
+candidate is evaluated again at the first open pass. A deployment already
+handed to the deployer is not interrupted. The `reconcile.manual` object
+of `comin status --json` reports the last `switch-latest` request:
+`requested_at`, `ended_at` (null while it waits), `state` and `reason`.
+It is not persisted.
+
 **Fork behaviour**: when `services.comin.preflightCommand` is `null`,
 comin reverts a change made outside of comin (`nixos-rebuild`, a
 closure activated by hand, ...) at the next tick, without any new

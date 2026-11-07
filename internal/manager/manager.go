@@ -25,6 +25,7 @@ import (
 	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/scheduler"
 	"github.com/nlewo/comin/internal/store"
+	"github.com/nlewo/comin/internal/syncgate"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -78,6 +79,13 @@ type Manager struct {
 	cacheSeq   int
 	retryEpoch uint64
 
+	// syncGate is the externally configured sync gate; watchPeriod is the
+	// period of its checks while an evaluation or a build runs.
+	syncGate    syncgate.Command
+	watchPeriod time.Duration
+	// gateReason is the last closed reason logged; it belongs to the pass goroutine.
+	gateReason string
+
 	// mu guards the fields below.
 	mu                sync.Mutex
 	buildPending      string
@@ -85,6 +93,7 @@ type Manager struct {
 	deployConfirmed   string
 	inFlight          *submission
 	reconcileSnapshot statusSnapshot
+	manual            *manualRequest
 }
 
 func New(s *store.Store,
@@ -100,6 +109,7 @@ func New(s *store.Store,
 	broker *broker.Broker,
 	configurationOperations ConfigurationOperations,
 	preflight preflight.Command,
+	opts ...Option,
 ) *Manager {
 
 	m := &Manager{
@@ -119,6 +129,7 @@ func New(s *store.Store,
 		configurationOperations: configurationOperations,
 		preflight:               preflight,
 		tick:                    30 * time.Second,
+		watchPeriod:             syncgate.WatchPeriod,
 		startedAt:               time.Now(),
 		exit:                    os.Exit,
 		wakeCh:                  make(chan struct{}, 1),
@@ -129,6 +140,9 @@ func New(s *store.Store,
 		},
 	}
 	m.reconcileSnapshot.since = m.startedAt
+	for _, o := range opts {
+		o(m)
+	}
 	return m
 }
 
@@ -149,6 +163,9 @@ func (m *Manager) toState() *protobuf.State {
 	}
 	if !snap.observedAt.IsZero() {
 		rc.ObservedAt = timestamppb.New(snap.observedAt)
+	}
+	if manual := m.manualStatus(); manual != nil {
+		rc.LastManual = &protobuf.Reconcile_Manual{Manual: manual}
 	}
 	for _, c := range snap.status.Candidates {
 		rc.Candidates = append(rc.Candidates, &protobuf.ReconcileCandidate{
@@ -187,6 +204,7 @@ func (m *Manager) SwitchDeploymentLatest() error {
 	if len(repository.Candidates(m.Fetcher.Latest())) == 0 {
 		return fmt.Errorf("manager: %s", reconcile.ReasonNoCandidate)
 	}
+	m.requestManual()
 	select {
 	case m.triggerCh <- reconcile.TriggerManual:
 	default:
@@ -261,6 +279,9 @@ func (m *Manager) Run(ctx context.Context) {
 	m.deployer.SetPreActivation(m.preActivation, m.abandoned)
 	m.deployer.Run(ctx)
 	go m.watch(ctx)
+	if m.syncGate.Configured() {
+		go m.watchGate(ctx)
+	}
 	go m.reconcileLoop(ctx)
 
 	for {

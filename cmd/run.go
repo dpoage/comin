@@ -21,6 +21,7 @@ import (
 	"github.com/nlewo/comin/internal/scheduler"
 	"github.com/nlewo/comin/internal/server"
 	storePkg "github.com/nlewo/comin/internal/store"
+	"github.com/nlewo/comin/internal/syncgate"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -105,7 +106,8 @@ var runCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		fetcher := fetcher.NewFetcher(repository)
+		syncGate := syncgate.Command{Path: cfg.SyncGate.Command, Timeout: time.Duration(cfg.SyncGate.Timeout) * time.Second}
+		fetcher := fetcher.NewFetcher(repository, fetcher.WithSyncGate(syncGate))
 		fetcher.Start(cmd.Context())
 		sched := scheduler.New()
 		sched.FetchRemotes(fetcher, cfg.Remotes)
@@ -135,7 +137,7 @@ var runCmd = &cobra.Command{
 			configurationOperations[r.Name][r.Branches.Testing.Name] = r.Branches.Testing.Operation
 		}
 		preflightCommand := preflight.Command{Path: cfg.PreflightCommand, Timeout: time.Duration(cfg.PreflightTimeout) * time.Second}
-		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, preflightCommand)
+		manager := manager.New(store, metrics, sched, fetcher, builder, deployer, machineId, executor, buildConfirmer, deployConfirmer, broker, configurationOperations, preflightCommand, manager.WithSyncGate(syncGate))
 
 		http.Serve(manager,
 			metrics,

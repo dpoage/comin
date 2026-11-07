@@ -48,7 +48,7 @@ func (s *cominServer) Fetch(ctx context.Context, empty *emptypb.Empty) (*emptypb
 	for _, r := range fetcher.RepositoryStatus.Remotes {
 		remotes = append(remotes, r.Name)
 	}
-	s.manager.Fetcher.TriggerFetch(remotes)
+	s.manager.Fetcher.TriggerFetchManual(remotes)
 	return nil, nil
 }
 

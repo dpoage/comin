@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nlewo/comin/internal/syncgate"
 	"github.com/nlewo/comin/internal/types"
 	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
@@ -67,6 +68,18 @@ func Read(path string) (config types.Configuration, err error) {
 	}
 	if config.PreflightTimeout == 0 {
 		config.PreflightTimeout = 60
+	}
+	if config.SyncGate.Command != "" && !filepath.IsAbs(config.SyncGate.Command) {
+		return config, fmt.Errorf("config: sync_gate.command is '%s' while it must be an absolute path", config.SyncGate.Command)
+	}
+	if config.SyncGate.Timeout < 0 {
+		return config, fmt.Errorf("config: sync_gate.timeout is '%d' seconds while it must not be negative (0 or absent means the default of %d seconds)", config.SyncGate.Timeout, syncgate.DefaultTimeoutSeconds)
+	}
+	if int64(config.SyncGate.Timeout) > int64(math.MaxInt64/time.Second) {
+		return config, fmt.Errorf("config: sync_gate.timeout is '%d' seconds while it must be at most %d seconds", config.SyncGate.Timeout, int64(math.MaxInt64/time.Second))
+	}
+	if config.SyncGate.Command != "" && config.SyncGate.Timeout == 0 {
+		config.SyncGate.Timeout = syncgate.DefaultTimeoutSeconds
 	}
 	if config.ApiServer.ListenAddress == "" {
 		config.ApiServer.ListenAddress = "127.0.0.1"

@@ -263,6 +263,32 @@ func (s *Store) GenerationBuildFinished(uuid string, buildErr error) error {
 	return nil
 }
 
+// GenerationEvalAborted returns the generation to the state it had before its
+// evaluation started. It records no failure and publishes no event.
+func (s *Store) GenerationEvalAborted(uuid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, err := s.generationGet(uuid)
+	if err != nil {
+		return err
+	}
+	g.EvalStatus = EvalInit.String()
+	return nil
+}
+
+// GenerationBuildAborted returns the generation to the state it had before its
+// build started. It records no failure and publishes no event.
+func (s *Store) GenerationBuildAborted(uuid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, err := s.generationGet(uuid)
+	if err != nil {
+		return err
+	}
+	g.BuildStatus = BuildInit.String()
+	return nil
+}
+
 // GenerationGet is thread safe and returns a copy
 func (s *Store) GenerationGet(uuid string) (protobuf.Generation, error) {
 	s.mu.Lock()

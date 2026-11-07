@@ -11,6 +11,7 @@ package builder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,8 @@ type Builder struct {
 	mu           sync.Mutex
 	isEvaluating atomic.Bool
 	isBuilding   atomic.Bool
+	// gateStop is set while StopForGate waits for a run it cancelled.
+	gateStop atomic.Bool
 
 	// GenerationUuid is the generation UUID currently managed by
 	// the builder. This generation can be evaluating, evaluated,
@@ -145,6 +148,30 @@ func (b *Builder) Stop() {
 	defer b.mu.Unlock()
 }
 
+// StopForGate stops the running evaluation or build, waits until it is
+// stopped and reports whether one was running. The generation goes back to
+// its state before the run: the stop is not a failure.
+func (b *Builder) StopForGate() bool {
+	evaluating, building := b.isEvaluating.Load(), b.isBuilding.Load()
+	if !evaluating && !building {
+		return false
+	}
+	b.gateStop.Store(true)
+	defer b.gateStop.Store(false)
+	if evaluating {
+		b.stopEval()
+	}
+	if building {
+		b.stopBuild()
+	}
+	return true
+}
+
+// gateAborted reports whether a run ended with err because StopForGate cancelled it.
+func (b *Builder) gateAborted(err error) bool {
+	return b.gateStop.Load() && errors.Is(err, context.Canceled)
+}
+
 type Evaluator struct {
 	repositoryPath  string
 	repostorySubdir string
@@ -214,6 +241,17 @@ func (b *Builder) Eval(ctx context.Context, c repository.Candidate) error {
 		b.evaluator.Wait()
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		if b.gateAborted(b.evaluator.getErr()) {
+			if err := b.store.GenerationEvalAborted(g.Uuid); err != nil {
+				logrus.Errorf("builder: %s", err)
+			}
+			b.isEvaluating.Store(false)
+			select {
+			case b.EvaluationDone <- g.Uuid:
+			default:
+			}
+			return
+		}
 		if err := b.store.GenerationEvalFinished(
 			g.Uuid,
 			evaluator.drvPath,
@@ -341,8 +379,11 @@ func (b *Builder) build(ctx context.Context, generationUuid string) error {
 		b.buildator.Wait()
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		err := b.store.GenerationBuildFinished(generationUuid, b.buildator.getErr())
-		if err != nil {
+		if b.gateAborted(b.buildator.getErr()) {
+			if err := b.store.GenerationBuildAborted(generationUuid); err != nil {
+				logrus.Error(err)
+			}
+		} else if err := b.store.GenerationBuildFinished(generationUuid, b.buildator.getErr()); err != nil {
 			logrus.Error(err)
 		}
 		b.isBuilding.Store(false)

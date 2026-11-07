@@ -193,6 +193,25 @@ message Reconcile {
   // time taken after a change took effect, observed_at > T shows a pass
   // that read every input after T. Null before the first pass.
   google.protobuf.Timestamp observed_at = 7;
+  // last_manual holds the outcome of the last switch-latest request; unset
+  // until the first one since this process started. It is a oneof so that
+  // the JSON status omits the unset field instead of emitting null.
+  // It is not persisted.
+  oneof last_manual {
+    ReconcileManual manual = 8;
+  }
+}
+
+// ReconcileManual is the outcome of a manual (switch-latest) request.
+message ReconcileManual {
+  google.protobuf.Timestamp requested_at = 1;
+  // ended_at is null until a pass ended the request: it handed a
+  // deployment over, or concluded its walk, or met a closed sync gate
+  google.protobuf.Timestamp ended_at = 2;
+  // state is the state of the last pass that served the request
+  string state = 3;
+  // reason is that pass's reason; empty before one ran
+  string reason = 4;
 }
 
 message Deployer {
