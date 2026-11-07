@@ -9,7 +9,6 @@ import (
 	"github.com/nlewo/comin/internal/reconcile"
 	"github.com/nlewo/comin/internal/repository"
 	"github.com/nlewo/comin/internal/store"
-	"github.com/nlewo/comin/internal/syncgate"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -301,8 +300,9 @@ func TestSyncGateStopLatency(t *testing.T) {
 		const period = 200 * time.Millisecond
 		stopLatency(t, period, rigOpts{watchPeriod: period}, 20)
 	})
+	// The rig runs the shipped period; the bound is the 2 s of the contract.
 	t.Run("shipped period", func(t *testing.T) {
-		stopLatency(t, syncgate.WatchPeriod, rigOpts{}, 4)
+		stopLatency(t, 2*time.Second, rigOpts{}, 4)
 	})
 }
 
