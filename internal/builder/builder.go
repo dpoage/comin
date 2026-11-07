@@ -152,17 +152,29 @@ func (b *Builder) Stop() {
 // stopped and reports whether one was running. The generation goes back to
 // its state before the run: the stop is not a failure.
 func (b *Builder) StopForGate() bool {
+	b.mu.Lock()
 	evaluating, building := b.isEvaluating.Load(), b.isBuilding.Load()
 	if !evaluating && !building {
+		b.mu.Unlock()
 		return false
 	}
 	b.gateStop.Store(true)
 	defer b.gateStop.Store(false)
+	// The run goroutines take b.mu to record their end: only cancel under it.
 	if evaluating {
-		b.stopEval()
+		b.evaluator.Stop()
 	}
 	if building {
-		b.stopBuild()
+		b.buildator.Stop()
+	}
+	b.mu.Unlock()
+	if evaluating {
+		b.evaluatorWg.Wait()
+		b.isEvaluating.Store(false)
+	}
+	if building {
+		b.buildatorWg.Wait()
+		b.isBuilding.Store(false)
 	}
 	return true
 }
